@@ -1,14 +1,20 @@
 ## Purpose
 
-定义 provider 公共接缝重构后对外可见的行为契约：能力表达与 facet 存在性一致、未注册 provider 与不支持能力的错误码区分、跨 provider 的 native session 身份隔离、单个 provider 同步失败的隔离，以及一次 run 的单一终态所有权。仅登记对外可观测的行为变化，纯内部实现手段（typed runtime、generic dispatcher、前端 state 收敛）不进入本 spec。
+定义 provider 公共接缝重构后对外可见的行为契约：provider 能力描述的单一真相、未注册 provider 与不支持能力的错误码区分、跨 provider 的 native session 身份隔离、单个 provider 同步失败的隔离，以及一次 run 跨传输通道的单一终态所有权。仅登记对外可观测的行为变化，纯内部实现手段（typed runtime、generic dispatcher、legacy runtime adapter、前端 state 收敛的具体形态）不进入本 spec。
 
 ## ADDED Requirements
 
-### Requirement: 能力表达与 facet 存在性一致
+### Requirement: provider 能力描述的单一真相
 
-The system SHALL 使 provider 的能力描述从其 facet 的存在性派生：`supportsMcp`、`supportsSkills`、`supportsTokenUsage` 分别等于对应 optional facet 是否存在。
+provider 的能力描述由两类字段组成，各自有且只有一个真相来源。
 
-The system SHALL NOT 同时维护 facet 与第二份手写的 `supportsX` 真相；能力描述与 facet 存在性不一致时以 facet 为准。
+The system SHALL 使 `supportsMcp`、`supportsSkills`、`supportsTokenUsage` 从对应 optional facet 的存在性派生。
+
+The system SHALL 以 provider 自身随注册提供的 descriptor 作为其余静态能力字段（权限模式列表、默认权限模式、images/files/abort/permissionRequests/effort 的支持与否）的唯一真相——这些字段无法由 facet 存在性推出，因此必须随 provider 定义一同声明。
+
+The system SHALL NOT 在 provider 定义之外维护第二份能力真相，包括中央静态能力矩阵与客户端按 provider id 硬编码的能力回退表。
+
+The system SHALL NOT 在能力描述尚未取得时按 provider id 猜测能力；此期间 SHALL 呈现「能力未就绪」而非某个默认值。
 
 #### Scenario: 具备 facet 的能力为真
 - **WHEN** 一个 provider 提供了 usage facet
@@ -18,11 +24,21 @@ The system SHALL NOT 同时维护 facet 与第二份手写的 `supportsX` 真相
 - **WHEN** 一个 provider 未提供 mcp facet
 - **THEN** 其能力描述中 `supportsMcp` 为 `false`
 
+#### Scenario: 静态能力字段随 provider 注册而生效
+- **WHEN** 注册一个新的 provider 并在其 descriptor 中声明权限模式与 effort 支持
+- **THEN** 该 provider 的能力描述立即反映这些值，且无需改动任何中央能力服务
+
+#### Scenario: 能力未就绪时不猜测
+- **WHEN** 调用方尚未取得能力描述（请求进行中或失败）
+- **THEN** 系统呈现未就绪状态，不依据 provider id 给出某个默认权限模式
+
 ### Requirement: 未注册 provider 与不支持能力的错误码区分
 
-The system SHALL 对"未注册的 provider"返回 `ERR-UNSUPPORTED-PROVIDER`，对"已注册但缺少某 facet"返回 `ERR-PROVIDER-CAPABILITY-UNSUPPORTED`，二者为不同的稳定错误。
+The system SHALL 对「未注册的 provider」返回 `ERR-UNSUPPORTED-PROVIDER`，对「已注册但缺少某 facet」返回 `ERR-PROVIDER-CAPABILITY-UNSUPPORTED`，二者为不同的稳定错误。
 
-The system SHALL NOT 用空成功结果把"不支持"伪装成"支持但无数据"。
+The system SHALL NOT 用空成功结果把「不支持」伪装成「支持但无数据」，读路径与写路径一致适用。
+
+The system SHALL 使聚合多个 provider 的操作在其中某个 provider 不支持该能力时跳过它并返回其余 provider 的结果，而非整体失败。
 
 #### Scenario: 未注册 provider
 - **WHEN** 调用方以一个未注册的 provider id 请求任意 facet
@@ -32,6 +48,14 @@ The system SHALL NOT 用空成功结果把"不支持"伪装成"支持但无数�
 - **WHEN** 调用方对一个已注册 provider 请求其未提供的 facet
 - **THEN** 系统以 `ERR-PROVIDER-CAPABILITY-UNSUPPORTED` 拒绝，而非返回空成功
 
+#### Scenario: 不支持能力的读操作同样明确拒绝
+- **WHEN** 调用方读取一个不支持 MCP 的 provider 的 MCP 服务器列表
+- **THEN** 系统以 `ERR-PROVIDER-CAPABILITY-UNSUPPORTED` 拒绝，而非返回每个 scope 都为空数组的成功结果
+
+#### Scenario: 聚合操作跳过不支持者
+- **WHEN** 一次跨 provider 的聚合 MCP 查询中包含不支持 MCP 的 provider
+- **THEN** 系统返回其余 provider 的结果，并将该 provider 标记为不支持，不使整个请求失败
+
 #### Scenario: 注册时 descriptor 非法
 - **WHEN** 注册一个默认权限模式不在其权限模式列表中的 provider
 - **THEN** 系统在注册阶段以 `ERR-PROVIDER-DESCRIPTOR-INVALID` 拒绝，不进入可用集合
@@ -40,11 +64,11 @@ The system SHALL NOT 用空成功结果把"不支持"伪装成"支持但无数�
 
 The system SHALL 以 `(provider, provider_session_id)` 作为 native session 的唯一标识；所有 native session 的查找与合并 SHALL 携带 provider。
 
-The system SHALL NOT 因两个不同 provider 拥有相同 native session id 字符串而将它们合并为同一行。
+The system SHALL NOT 因两个不同 provider 拥有相同 native session id 字符串而将它们合并为同一行，尤其 SHALL NOT 因此删除其中任何一行。
 
 #### Scenario: 相同 native id 不同 provider 不合并
 - **WHEN** provider A 与 provider B 各有一个 native session id 相同的 session
-- **THEN** 系统将其视为两个不同 session，不合并
+- **THEN** 系统将其视为两个不同 session，两行都保留，均不被删除
 
 #### Scenario: 同 provider 重复 native id
 - **WHEN** 同一 provider 出现重复的 native session id
@@ -68,11 +92,17 @@ The system SHALL NOT 因某一个 provider 同步失败而阻止其他 provider 
 - **WHEN** 失败的 provider 在下一轮扫描恢复
 - **THEN** 系统从其自身游标位置继续，不重扫其他 provider
 
+#### Scenario: 从未扫描过的 provider
+- **WHEN** 一个新注册的 provider 尚无游标记录
+- **THEN** 系统对其执行全量扫描，且不影响其他 provider 的增量游标
+
 ### Requirement: 单一终态所有权
 
 The system SHALL 使 application 层的 coordinator 成为一次 run 终态（complete/aborted/failed）的唯一生产者；provider runtime 只产生非终态事件并返回 outcome。
 
-The system SHALL NOT 允许 provider runtime、进程退出或 gateway 各自独立产生终态；一次 run 对外 SHALL 恰好观察到一个终态。
+The system SHALL 使该保证与传输通道无关：经 WebSocket 与经 HTTP/SSE 观察到的终态数量都恰好为一。
+
+The system SHALL NOT 允许 provider runtime、进程退出或 gateway 各自独立产生终态。
 
 #### Scenario: 正常完成只有一个终态
 - **WHEN** 一次 run 正常结束
@@ -85,3 +115,7 @@ The system SHALL NOT 允许 provider runtime、进程退出或 gateway 各自独
 #### Scenario: runtime 抛错或进程关闭
 - **WHEN** provider runtime 抛错或进程异常关闭
 - **THEN** coordinator 产生恰好一个失败终态
+
+#### Scenario: HTTP/SSE 传输下的终态唯一性
+- **WHEN** 一次经 HTTP/SSE 发起的 run 被 abort，且 runtime 随后仍从退出处理器发出自己的终态
+- **THEN** SSE 流上仍恰好观察到一个终态，与 WebSocket 下的观察结果一致
