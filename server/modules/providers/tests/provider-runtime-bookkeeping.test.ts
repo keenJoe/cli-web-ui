@@ -359,6 +359,62 @@ test('4.4 cancellation during async initialization never starts native execution
   });
 });
 
+test('Codex applies the selected model default when the composer leaves effort at default', async () => {
+  const { queryCodex } = await import('../list/codex/codex-runtime.provider.js');
+  const { writer } = createWriter();
+  let receivedThreadOptions: Record<string, unknown> | undefined;
+  const thread = {
+    id: 'native-codex-effort-default',
+    async runStreamed() {
+      return {
+        events: (async function* () {
+          yield { type: 'thread.started', thread_id: 'native-codex-effort-default' };
+          yield { type: 'turn.completed', usage: null };
+        })(),
+      };
+    },
+  };
+
+  await queryCodex(
+    'hello',
+    {
+      sessionId: 'app-codex-effort-default',
+      model: 'gpt-5.4',
+      effort: 'default',
+      permissionMode: 'acceptEdits',
+    },
+    writer,
+    createRuntimeContext({
+      getProviderModels: async () => ({
+        OPTIONS: [{
+          value: 'gpt-5.4',
+          label: 'gpt-5.4',
+          effort: {
+            default: 'medium',
+            values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }],
+          },
+        }],
+        DEFAULT: 'gpt-5.4',
+      }),
+    }),
+    {
+      createCodex: () => ({
+        startThread(options: Record<string, unknown>) {
+          receivedThreadOptions = options;
+          return thread;
+        },
+        resumeThread(_sessionId: string, options: Record<string, unknown>) {
+          receivedThreadOptions = options;
+          return thread;
+        },
+      }),
+    },
+  );
+
+  assert.equal(receivedThreadOptions?.model, 'gpt-5.4');
+  assert.equal(receivedThreadOptions?.modelReasoningEffort, 'medium');
+});
+
 test('4.4 Cursor workspace-trust retry does not spawn after cancellation', async (t) => {
   t.mock.method(console, 'error', () => {});
   const { spawnCursor } = await import('../list/cursor/cursor-runtime.provider.js');

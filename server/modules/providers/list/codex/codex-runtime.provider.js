@@ -256,9 +256,18 @@ export async function queryCodex(command, options = {}, ws, context, runtimeDepe
   }
   const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
   const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
-  const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
+  const catalogDefaultEffort = selectedModel?.effort?.default;
+  // Codex otherwise inherits the global model_reasoning_effort setting. That
+  // setting can be valid for the configured model but rejected by a model the
+  // user selected in the composer, so prefer the selected model's catalog
+  // default whenever the caller did not provide a supported effort.
+  const resolvedEffort = typeof effort === 'string'
+    && effort !== 'default'
+    && allowedEfforts.includes(effort)
     ? effort
-    : undefined;
+    : typeof catalogDefaultEffort === 'string' && allowedEfforts.includes(catalogDefaultEffort)
+      ? catalogDefaultEffort
+      : undefined;
 
   let codex;
   let thread;

@@ -124,11 +124,13 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               </div>
             )}
           </div>
-          {!isGrouped && (
-            <div className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm text-white sm:flex">
-              U
-            </div>
-          )}
+          {/* Keep the avatar slot in place so the bubble edge stays aligned on every turn. */}
+          <div
+            aria-hidden="true"
+            className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm text-white sm:flex"
+          >
+            U
+          </div>
         </div>
       ) : message.isTaskNotification ? (
         /* Compact task notification on the left */

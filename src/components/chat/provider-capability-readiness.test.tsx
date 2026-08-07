@@ -260,6 +260,46 @@ test('permission picker stays visible and disabled while provider capabilities a
   }
 });
 
+test('grouped user messages still show the user avatar while keeping bubbles aligned', async () => {
+  const vite = await createServer({ appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } });
+  try {
+    const componentModule = await vite.ssrLoadModule(
+      '/src/components/chat/view/subcomponents/MessageComponent.tsx',
+    );
+    const MessageComponent = componentModule.default as React.ComponentType<any>;
+    const userMessage = {
+      id: 'user-current',
+      type: 'user',
+      content: '介绍一下自己',
+      timestamp: '2026-08-07T00:00:00.000Z',
+    };
+    const previousUserMessage = {
+      id: 'user-previous',
+      type: 'user',
+      content: '上一条用户消息',
+      timestamp: '2026-08-07T00:00:01.000Z',
+    };
+    const renderUserMessage = (prevMessage: typeof previousUserMessage | null) => renderToStaticMarkup(
+      <MessageComponent
+        message={userMessage}
+        prevMessage={prevMessage}
+        createDiff={() => []}
+        selectedProject={selectedProject}
+        provider="pi"
+      />,
+    );
+
+    const ungroupedHtml = renderUserMessage(null);
+    assert.match(ungroupedHtml, />U<\/div>/);
+
+    const groupedHtml = renderUserMessage(previousUserMessage);
+    assert.match(groupedHtml, /chat-message user grouped/);
+    assert.match(groupedHtml, />U<\/div>/);
+  } finally {
+    await vite.close();
+  }
+});
+
 test('model picker renders a disabled skeleton instead of a guessed default while capabilities are unavailable', () => {
   for (const capabilityStatus of ['loading', 'error'] as const) {
     const html = renderToStaticMarkup(
