@@ -24,11 +24,18 @@ export class PiSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly paths = new PiPaths();
 
   /**
+   * Resolves every configured Pi session root for the sessions watcher.
+   */
+  getWatchRoots(): string[] {
+    return this.paths.getSessionRoots();
+  }
+
+  /**
    * Scans every Pi session root and upserts discovered sessions into DB.
    */
   async synchronize(since?: Date): Promise<number> {
     let processed = 0;
-    for (const root of this.paths.getSessionRoots()) {
+    for (const root of this.getWatchRoots()) {
       const files = await findFilesRecursivelyCreatedAfter(root, '.jsonl', since ?? null);
       for (const filePath of files) {
         try {
@@ -75,7 +82,8 @@ export class PiSessionSynchronizer implements IProviderSessionSynchronizer {
     }
 
     const existingName = (
-      sessionsDb.getSessionByProviderSessionId(sessionId) ?? sessionsDb.getSessionById(sessionId)
+      sessionsDb.getSessionByProviderSessionId(sessionId, this.provider)
+      ?? sessionsDb.getSessionById(sessionId)
     )?.custom_name;
     const nextName = existingName && existingName !== FALLBACK_SESSION_NAME ? existingName : undefined;
 

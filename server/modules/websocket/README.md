@@ -19,7 +19,7 @@ Shared chat client registry and open-state constant used by other modules.
 
 ## Why Dependency Injection Is Used
 
-The module receives runtime-specific functions from `server/index.ts` instead of importing legacy runtime files directly.
+The module receives generic application/runtime services from the server assembly root instead of importing provider implementations directly.
 
 Benefits:
 
@@ -117,9 +117,9 @@ The frontend only ever knows the **app session id** (allocated by
 `POST /api/providers/sessions` or discovered via the session index). The
 provider-native id (JSONL file name, CLI resume id) stays inside the backend:
 
-1. `chat.send` resolves the app id to `{ provider, project_path }` from the sessions DB and passes the **app session id** to the provider runtime.
-2. The provider runtime resolves the provider-native id from the sessions DB itself (`sessionsService.resolveProviderSessionId`) at the exact points its CLI/SDK needs it (resume flags, provider-owned databases). Runtimes key their process maps by the app session id, so abort and pending-approval lookups use app ids too.
-3. The `ChatSessionWriter` remaps every outbound event back to the app id, and turns `session_created` announcements into a DB mapping update instead of forwarding them.
+1. `chat.send` resolves the app id to its trusted session row (`provider`, `project_path`, and provider-native mapping) before starting a run.
+2. The application coordinator persists the first provider-native mapping before it becomes transport-visible. Runtime gateways receive the trusted, provider-qualified native id only where their CLI/SDK needs it; runtimes still key process maps by the app session id, so abort and pending-approval lookups use app ids too.
+3. The `ChatSessionWriter` remaps outbound events to the app id and mirrors them into the run registry for replay/broadcast. It does not own native-id persistence or normal terminal production.
 
 ### Chat Message Dispatch
 
@@ -130,7 +130,7 @@ flowchart TD
   B -->|ok| D{data.type}
 
   D -->|chat.send| E[resolve session row -> startRun -> providerRuntimeService.run]
-  D -->|chat.abort| F[providerRuntimeService.abort + synthetic complete]
+  D -->|chat.abort| F[coordinator abort + terminal projection]
   D -->|chat.subscribe| G[chat_subscribed ack + attach socket + replay events seq > lastSeq]
   D -->|chat.permission-response| H[providerRuntimeService.resolveToolApproval]
   D -->|other| I[send kind:protocol_error]
@@ -139,7 +139,7 @@ flowchart TD
 ### Chat Notes
 
 1. **Unified envelope**: every server-to-client frame carries a `kind` — either a provider `NormalizedMessage` kind or a gateway kind (`chat_subscribed`, `session_upserted`, `loading_progress`, `protocol_error`). There is no second `type`-based protocol.
-2. **Unified terminal lifecycle**: every provider run ends with exactly one `complete` message built by `createCompleteMessage()` (`server/shared/utils.ts`): `{ kind: "complete", sessionId, actualSessionId, exitCode, success, aborted }`. The chat handler emits a synthetic `complete` for runs that crash or get aborted, and the run registry drops duplicate completes.
+2. **Unified terminal lifecycle**: every provider run ends with exactly one `complete` message built by `createCompleteMessage()` (`server/shared/utils.ts`): `{ kind: "complete", sessionId, actualSessionId, exitCode, success, aborted }`. The application coordinator owns normal, abort, and failure terminal production. The run registry mirrors and replays that terminal, retaining first-wins and a bounded safety fallback only as compatibility protection.
 3. **Per-run event log**: every live event gets a monotonically increasing `seq`. `chat.subscribe { sessions: [{ sessionId, lastSeq }] }` re-attaches the live stream to the requesting socket (any provider, not just Claude) and replays events with `seq > lastSeq`. If the buffer no longer covers `lastSeq`, the client refreshes over REST.
 4. `chat_subscribed` includes `isProcessing` (replaces `check-session-status`) and `pendingPermissions` (replaces `get-pending-permissions`).
 

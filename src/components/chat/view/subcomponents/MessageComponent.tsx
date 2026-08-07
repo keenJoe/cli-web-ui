@@ -2,6 +2,7 @@ import { memo, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
+import { getProviderBrand } from '../../../llm-logo-provider/providerBranding';
 import type {
   ChatMessage,
   ClaudePermissionSuggestion,
@@ -74,6 +75,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 
   const formattedTime = useMemo(() => new Date(message.timestamp).toLocaleTimeString(), [message.timestamp]);
   const shouldHideThinkingMessage = Boolean(message.isThinking && !showThinking);
+  const providerMessageLabel = getProviderBrand(provider).messageLabel;
 
   if (shouldHideThinkingMessage) {
     return null;
@@ -159,15 +161,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   ? t('messageTypes.error')
                   : message.type === 'tool'
                     ? t('messageTypes.tool')
-                    : (provider === 'cursor'
-                        ? t('messageTypes.cursor')
-                        : provider === 'codex'
-                          ? t('messageTypes.codex')
-                          : provider === 'opencode'
-                              ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-                              : provider === 'pi'
-                                  ? t('messageTypes.pi', { defaultValue: 'Pi' })
-                              : t('messageTypes.claude'))}
+                    : t(providerMessageLabel.key, {
+                        defaultValue: providerMessageLabel.defaultValue,
+                      })}
               </div>
             </div>
           )}

@@ -10,17 +10,103 @@ type CursorLoginStatus = {
   error?: string;
 };
 
+type CursorStatusCommandResult = {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  error?: string;
+};
+
+type CursorAuthDependencies = {
+  checkInstalled(): boolean;
+  readLoginStatus(): Promise<CursorStatusCommandResult>;
+};
+
+function checkCursorInstalled(): boolean {
+  try {
+    spawn.sync('cursor-agent', ['--version'], { stdio: 'ignore', timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readCursorLoginStatus(): Promise<CursorStatusCommandResult> {
+  return new Promise((resolve) => {
+    let processCompleted = false;
+    let childProcess: ReturnType<typeof spawn> | undefined;
+
+    const finish = (result: CursorStatusCommandResult): void => {
+      if (processCompleted) {
+        return;
+      }
+      processCompleted = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+
+    const timeout = setTimeout(() => {
+      childProcess?.kill();
+      finish({
+        code: null,
+        stdout: '',
+        stderr: '',
+        error: 'Command timeout',
+      });
+    }, 5000);
+
+    try {
+      childProcess = spawn('cursor-agent', ['status']);
+    } catch {
+      finish({
+        code: null,
+        stdout: '',
+        stderr: '',
+        error: 'Cursor CLI not found or not installed',
+      });
+      return;
+    }
+
+    let stdout = '';
+    let stderr = '';
+    childProcess.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+    childProcess.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+    childProcess.on('close', (code) => {
+      finish({ code, stdout, stderr });
+    });
+    childProcess.on('error', () => {
+      finish({
+        code: null,
+        stdout,
+        stderr,
+        error: 'Cursor CLI not found or not installed',
+      });
+    });
+  });
+}
+
+const defaultDependencies: CursorAuthDependencies = {
+  checkInstalled: checkCursorInstalled,
+  readLoginStatus: readCursorLoginStatus,
+};
+
+/** Provider registry auth facet used to report Cursor CLI readiness. */
 export class CursorProviderAuth implements IProviderAuth {
+  private readonly dependencies: CursorAuthDependencies;
+
+  constructor(dependencies: Partial<CursorAuthDependencies> = {}) {
+    this.dependencies = { ...defaultDependencies, ...dependencies };
+  }
+
   /**
    * Checks whether the cursor-agent CLI is available on this host.
    */
   private checkInstalled(): boolean {
-    try {
-      spawn.sync('cursor-agent', ['--version'], { stdio: 'ignore', timeout: 5000 });
-      return true;
-    } catch {
-      return false;
-    }
+    return this.dependencies.checkInstalled();
   }
 
   /**
@@ -55,89 +141,51 @@ export class CursorProviderAuth implements IProviderAuth {
   /**
    * Runs cursor-agent status and parses the login marker from stdout.
    */
-  private checkCursorLogin(): Promise<CursorLoginStatus> {
-    return new Promise((resolve) => {
-      let processCompleted = false;
-      let childProcess: ReturnType<typeof spawn> | undefined;
+  private async checkCursorLogin(): Promise<CursorLoginStatus> {
+    const result = await this.dependencies.readLoginStatus();
+    if (result.error) {
+      return {
+        authenticated: false,
+        email: null,
+        method: null,
+        error: result.error,
+      };
+    }
 
-      const timeout = setTimeout(() => {
-        if (!processCompleted) {
-          processCompleted = true;
-          childProcess?.kill();
-          resolve({
-            authenticated: false,
-            email: null,
-            method: null,
-            error: 'Command timeout',
-          });
-        }
-      }, 5000);
+    if (result.code !== 0) {
+      return {
+        authenticated: false,
+        email: null,
+        method: null,
+        error: result.stderr || 'Not logged in',
+      };
+    }
 
-      try {
-        childProcess = spawn('cursor-agent', ['status']);
-      } catch {
-        clearTimeout(timeout);
-        processCompleted = true;
-        resolve({
-          authenticated: false,
-          email: null,
-          method: null,
-          error: 'Cursor CLI not found or not installed',
-        });
-        return;
-      }
+    if (/unable to fetch user details/i.test(result.stdout)) {
+      return {
+        authenticated: false,
+        email: null,
+        method: null,
+        error: 'Unable to verify Cursor account details',
+      };
+    }
 
-      let stdout = '';
-      let stderr = '';
+    const emailMatch = result.stdout.match(
+      /Logged in as ([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i,
+    );
+    if (emailMatch?.[1]) {
+      return { authenticated: true, email: emailMatch[1], method: 'cli' };
+    }
 
-      childProcess.stdout?.on('data', (data: Buffer) => {
-        stdout += data.toString();
-      });
+    if (result.stdout.includes('Logged in')) {
+      return { authenticated: true, email: 'Logged in', method: 'cli' };
+    }
 
-      childProcess.stderr?.on('data', (data: Buffer) => {
-        stderr += data.toString();
-      });
-
-      childProcess.on('close', (code) => {
-        if (processCompleted) {
-          return;
-        }
-        processCompleted = true;
-        clearTimeout(timeout);
-
-        if (code === 0) {
-          const emailMatch = stdout.match(/Logged in as ([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i);
-          if (emailMatch?.[1]) {
-            resolve({ authenticated: true, email: emailMatch[1], method: 'cli' });
-            return;
-          }
-
-          if (stdout.includes('Logged in')) {
-            resolve({ authenticated: true, email: 'Logged in', method: 'cli' });
-            return;
-          }
-
-          resolve({ authenticated: false, email: null, method: null, error: 'Not logged in' });
-          return;
-        }
-
-        resolve({ authenticated: false, email: null, method: null, error: stderr || 'Not logged in' });
-      });
-
-      childProcess.on('error', () => {
-        if (processCompleted) {
-          return;
-        }
-        processCompleted = true;
-        clearTimeout(timeout);
-
-        resolve({
-          authenticated: false,
-          email: null,
-          method: null,
-          error: 'Cursor CLI not found or not installed',
-        });
-      });
-    });
+    return {
+      authenticated: false,
+      email: null,
+      method: null,
+      error: 'Not logged in',
+    };
   }
 }

@@ -14,8 +14,8 @@ export const providerSkillsService = {
     providerName: string,
     options?: ProviderSkillListOptions,
   ): Promise<ProviderSkill[]> {
-    const provider = providerRegistry.resolveProvider(providerName);
-    return provider.skills.listSkills(options);
+    const skills = providerRegistry.requireFacet(providerName, 'skills');
+    return skills.listSkills(options);
   },
 
   /**
@@ -25,15 +25,15 @@ export const providerSkillsService = {
     providerName: string,
     input: ProviderSkillCreateInput,
   ): Promise<ProviderSkill[]> {
-    const provider = providerRegistry.resolveProvider(providerName);
-    return provider.skills.addSkills(input);
+    const skills = providerRegistry.requireFacet(providerName, 'skills');
+    return skills.addSkills(input);
   },
 
   async removeProviderSkill(
     providerName: string,
     input: ProviderSkillRemoveInput,
   ): Promise<{ removed: boolean; provider: string; directoryName: string }> {
-    const provider = providerRegistry.resolveProvider(providerName);
-    return provider.skills.removeSkill(input);
+    const skills = providerRegistry.requireFacet(providerName, 'skills');
+    return skills.removeSkill(input);
   },
 };

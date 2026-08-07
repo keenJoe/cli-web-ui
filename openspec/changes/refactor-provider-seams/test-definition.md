@@ -49,9 +49,9 @@
 | R12 | runtime 抛错/进程异常关闭 | coordinator 产生恰好一个失败终态 | 异常 | spec: 单一终态 |
 | R13 | legacy runtime 试图发 `complete` | 被 adapter/类型拦截，不产生第二终态 | 对抗 | spec: 单一终态 |
 | R14 | 真实库存在跨 provider 重复 native id，执行迁移 | provider-qualified 合并，不跨 provider 误并 | 高风险 | design: 迁移 |
-| R15 | **5 个** provider（claude/codex/cursor/opencode/pi）各自 characterization 冒烟 | 重构前后 observable 一致（三处刻意 BREAKING 除外） | 正常/高风险 | design: 兼容性 |
+| R15 | **5 个** provider（claude/codex/cursor/opencode/pi）各自 characterization 冒烟，并经 Agent HTTP 在未传 model 时派发 | 重构前后 observable 一致；Claude/Cursor 的 typed run model 为 `undefined`，Codex/OpenCode/Pi 为各自 catalog `DEFAULT`（三处刻意 BREAKING 除外） | 正常/高风险 | design: 兼容性 |
 | R16 | providers 模块静态依赖扫描 | 无 providers→WebSocket import（当前 2 处：`sessions.service.ts:6`、`sessions-watcher.service.ts:10`） | 高风险 | design: 依赖单向 |
-| R17 | abort 与迟到 native event 竞争（**HTTP/SSE**） | 恰好一个 aborted 终态，与 WS 观察一致 | 对抗/高风险 | spec: 单一终态跨传输 |
+| R17 | abort 与迟到 native event 竞争（**HTTP/SSE**）；HTTP new→resume 与跨 provider resume | 恰好一个 aborted 终态，与 WS 观察一致；mapping 在暴露前持久化，跨 provider resume 在目标 runtime 启动前拒绝 | 对抗/高风险 | spec: 单一终态跨传输、身份隔离 |
 | R18 | 注册一个测试 provider，统计需改动的中央文件 | 仅 `LLMProvider` 联合、registry 注册、前端品牌映射三处 | 高风险 | design: 中央点收敛 |
 | R19 | 执行手工回滚脚本删除部分唯一索引 | 索引消失、旧代码路径可正常读写 | 高风险 | design: 迁移无 down 框架 |
 | R20 | capability 请求失败或未返回 | UI 呈禁用骨架，不出现按 provider id 猜测的默认权限模式 | 异常 | spec: 能力未就绪不猜测 |
@@ -78,6 +78,7 @@
 - [ ] characterization tests 在**重构前**先建立并通过（5 个 provider 的 golden 基准存在），否则不得开始替换。
 - [ ] R17 的重构前失败基线已录制（证明 SSE 路径当前无终态去重）。
 - [ ] `npm run build`、`npm run typecheck`、`npm run lint`、`npm test` 全绿。
+      **前提已修正**：`npm test` 在本 change 开始前为 47/108 通过（61 失败，`@/` 别名解析），该门禁此前从未成立。已由 `package.json` 的 `test` 脚本加 `cross-env TSX_TSCONFIG_PATH=server/tsconfig.json` 修复（见 proposal「附带修复」），修复后该门禁才首次可用。基线为 375 用例全绿。
 - [ ] 唯一约束迁移前已对真实库查询确认重复行情况（E12），合并在单事务内完成。
 - [ ] 手工回滚脚本已交付并在测试库演练成功（R19）——因 `migrations.ts` 无 down migration 框架，此项不可用「框架回滚」替代。
 - [ ] 一次 run 恰好一个终态，WebSocket 与 HTTP/SSE 两条传输均满足（R10–R13、R17 全通过）。

@@ -5,10 +5,16 @@ import { Trans, useTranslation } from "react-i18next";
 import type {
   ProjectSession,
   LLMProvider,
+  ProviderCapabilityStatus,
   ProviderModelsDefinition,
 } from "../../../../types/app";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
+import {
+  getProviderBrand,
+  PROVIDER_IDS,
+} from "../../../llm-logo-provider/providerBranding";
 import { NextTaskBanner } from "../../../task-master";
+import { resolveProviderModelSelection } from "../../utils/providerModelSelection";
 import {
   Dialog,
   DialogTrigger,
@@ -22,14 +28,6 @@ import {
   CommandItem,
   Card,
 } from "../../../../shared/view/ui";
-
-const PROVIDER_META: { id: LLMProvider; name: string }[] = [
-  { id: "claude", name: "Anthropic" },
-  { id: "codex", name: "OpenAI" },
-  { id: "cursor", name: "Cursor" },
-  { id: "opencode", name: "OpenCode" },
-  { id: "pi", name: "Pi" },
-];
 
 const MOD_KEY =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
@@ -49,18 +47,11 @@ type ProviderSelectionEmptyStateProps = {
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
   provider: LLMProvider;
+  providerCapabilityStatus: ProviderCapabilityStatus;
   setProvider: (next: LLMProvider) => void;
   textareaRef: React.RefObject<HTMLTextAreaElement>;
-  claudeModel: string;
-  setClaudeModel: (model: string) => void;
-  cursorModel: string;
-  setCursorModel: (model: string) => void;
-  codexModel: string;
-  setCodexModel: (model: string) => void;
-  opencodeModel: string;
-  setOpenCodeModel: (model: string) => void;
-  piModel: string;
-  setPiModel: (model: string) => void;
+  providerModels: Partial<Record<LLMProvider, string>>;
+  setStoredProviderModel: (provider: LLMProvider, model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
   tasksEnabled: boolean;
@@ -83,46 +74,19 @@ function getModelConfig(
   return entry ?? { OPTIONS: [], DEFAULT: "" };
 }
 
-function getCurrentModel(
-  p: LLMProvider,
-  c: string,
-  cu: string,
-  co: string,
-  o: string,
-  pi: string,
-) {
-  if (p === "claude") return c;
-  if (p === "codex") return co;
-  if (p === "opencode") return o;
-  if (p === "pi") return pi;
-  return cu;
-}
-
 function getProviderDisplayName(p: LLMProvider) {
-  if (p === "claude") return "Claude";
-  if (p === "cursor") return "Cursor";
-  if (p === "codex") return "Codex";
-  if (p === "opencode") return "OpenCode";
-  if (p === "pi") return "Pi";
-  return "Claude";
+  return getProviderBrand(p).displayName;
 }
 
 export default function ProviderSelectionEmptyState({
   selectedSession,
   currentSessionId,
   provider,
+  providerCapabilityStatus,
   setProvider,
   textareaRef,
-  claudeModel,
-  setClaudeModel,
-  cursorModel,
-  setCursorModel,
-  codexModel,
-  setCodexModel,
-  opencodeModel,
-  setOpenCodeModel,
-  piModel,
-  setPiModel,
+  providerModels,
+  setStoredProviderModel,
   providerModelCatalog,
   providerModelsLoading,
   tasksEnabled,
@@ -134,10 +98,10 @@ export default function ProviderSelectionEmptyState({
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
-    return PROVIDER_META.map((p) => ({
-      id: p.id,
-      name: p.name,
-      models: providerModelCatalog[p.id]?.OPTIONS ?? [],
+    return PROVIDER_IDS.map((providerId) => ({
+      id: providerId,
+      name: getProviderBrand(providerId).companyName,
+      models: providerModelCatalog[providerId]?.OPTIONS ?? [],
     }));
   }, [providerModelCatalog]);
 
@@ -145,13 +109,21 @@ export default function ProviderSelectionEmptyState({
     defaultValue: "Start the next task",
   });
 
-  const currentModel = getCurrentModel(
-    provider,
-    claudeModel,
-    cursorModel,
-    codexModel,
-    opencodeModel,
-    piModel,
+  const currentModel = useMemo(() => {
+    if (providerCapabilityStatus !== "ready") {
+      return null;
+    }
+
+    const config = providerModelCatalog[provider];
+    if (!config) {
+      return null;
+    }
+
+    return resolveProviderModelSelection(config, providerModels[provider]);
+  }, [provider, providerCapabilityStatus, providerModelCatalog, providerModels]);
+  const isModelPickerReady = Boolean(currentModel);
+  const isModelChooserReady = providerCapabilityStatus === "ready" && visibleProviderGroups.some(
+    (group) => group.models.some((model) => Boolean(model.value.trim())),
   );
 
   const currentModelLabel = useMemo(() => {
@@ -159,40 +131,19 @@ export default function ProviderSelectionEmptyState({
     const found = config.OPTIONS.find(
       (o: { value: string; label: string }) => o.value === currentModel,
     );
-    return found?.label || currentModel;
+    return found?.label || currentModel || "";
   }, [provider, currentModel, providerModelCatalog]);
-
-  const setModelForProvider = useCallback(
-    (providerId: LLMProvider, modelValue: string) => {
-      if (providerId === "claude") {
-        setClaudeModel(modelValue);
-        localStorage.setItem("claude-model", modelValue);
-      } else if (providerId === "codex") {
-        setCodexModel(modelValue);
-        localStorage.setItem("codex-model", modelValue);
-      } else if (providerId === "opencode") {
-        setOpenCodeModel(modelValue);
-        localStorage.setItem("opencode-model", modelValue);
-      } else if (providerId === "pi") {
-        setPiModel(modelValue);
-        localStorage.setItem("pi-model", modelValue);
-      } else {
-        setCursorModel(modelValue);
-        localStorage.setItem("cursor-model", modelValue);
-      }
-    },
-    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setPiModel],
-  );
+  const providerBrand = getProviderBrand(provider);
 
   const handleModelSelect = useCallback(
     (providerId: LLMProvider, modelValue: string) => {
       setProvider(providerId);
       localStorage.setItem("selected-provider", providerId);
-      setModelForProvider(providerId, modelValue);
+      setStoredProviderModel(providerId, modelValue);
       setDialogOpen(false);
       setTimeout(() => textareaRef.current?.focus(), 100);
     },
-    [setProvider, setModelForProvider, textareaRef],
+    [setProvider, setStoredProviderModel, textareaRef],
   );
 
   if (!selectedSession && !currentSessionId) {
@@ -208,7 +159,7 @@ export default function ProviderSelectionEmptyState({
             </p>
           </div>
 
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          {isModelChooserReady ? <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
               <Card
                 className="group mx-auto max-w-xs cursor-pointer border-border/60 transition-all duration-150 hover:border-border hover:shadow-md active:scale-[0.99]"
@@ -227,7 +178,9 @@ export default function ProviderSelectionEmptyState({
                       </span>
                       <span className="text-xs text-muted-foreground">·</span>
                       <span className="truncate text-xs text-foreground">
-                        {currentModelLabel}
+                        {currentModelLabel || t("providerSelection.selectModel", {
+                          defaultValue: "Choose a model",
+                        })}
                       </span>
                     </div>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">
@@ -310,31 +263,31 @@ export default function ProviderSelectionEmptyState({
                 </CommandList>
               </Command>
             </DialogContent>
-          </Dialog>
+          </Dialog> : (
+            <button
+              type="button"
+              disabled
+              aria-disabled="true"
+              aria-busy="true"
+              aria-label={t("providerSelection.modelUnavailable", {
+                defaultValue: "Model unavailable",
+              })}
+              className="mx-auto flex h-[3.25rem] w-full max-w-xs items-center gap-2 rounded-lg border border-border/60 bg-card p-3 text-left"
+            >
+              <span aria-hidden className="h-5 w-5 shrink-0 animate-pulse rounded bg-muted-foreground/25" />
+              <span className="min-w-0 flex-1 space-y-1.5" aria-hidden>
+                <span className="block h-3 w-24 animate-pulse rounded-sm bg-muted-foreground/25" />
+                <span className="block h-2.5 w-32 animate-pulse rounded-sm bg-muted-foreground/20" />
+              </span>
+            </button>
+          )}
 
-          <p className="mt-4 text-center text-sm text-muted-foreground/70">
-            {
-              {
-                claude: t("providerSelection.readyPrompt.claude", {
-                  model: claudeModel,
-                }),
-                cursor: t("providerSelection.readyPrompt.cursor", {
-                  model: cursorModel,
-                }),
-                codex: t("providerSelection.readyPrompt.codex", {
-                  model: codexModel,
-                }),
-                opencode: t("providerSelection.readyPrompt.opencode", {
-                  model: opencodeModel,
-                  defaultValue: "Ready with OpenCode {{model}}",
-                }),
-                pi: t("providerSelection.readyPrompt.pi", {
-                  model: piModel,
-                  defaultValue: "Ready with Pi {{model}}",
-                }),
-              }[provider]
-            }
-          </p>
+          {isModelPickerReady ? <p className="mt-4 text-center text-sm text-muted-foreground/70">
+            {t(providerBrand.readyPrompt.key, {
+              model: currentModel,
+              defaultValue: providerBrand.readyPrompt.defaultValue,
+            })}
+          </p> : <div aria-hidden className="mx-auto mt-4 h-4 w-36 animate-pulse rounded-sm bg-muted-foreground/15" />}
 
           <p className="mt-3 flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground/60">
             <Trans

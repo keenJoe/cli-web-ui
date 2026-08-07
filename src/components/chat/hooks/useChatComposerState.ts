@@ -13,7 +13,6 @@ import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionProcessing, SessionActivityMap } from '../../../hooks/useSessionProtection';
-import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import {
   clearQueuedMessage,
   readQueuedMessage,
@@ -21,6 +20,11 @@ import {
   writeQueuedMessage,
   type QueuedSendOptions,
 } from '../utils/chatStorage';
+import { resolveQueuedSendOptions } from '../utils/queuedSendValidation';
+import {
+  getProviderToolsSettingsStorageKey,
+  grantProviderToolPermission,
+} from '../utils/providerBehavior';
 import type {
   ChatAttachment,
   ChatMessage,
@@ -28,7 +32,13 @@ import type {
   PermissionMode,
   SessionEstablishedContext,
 } from '../types/types';
-import type { Project, ProjectSession, LLMProvider, ProviderModelsCacheInfo } from '../../../types/app';
+import type {
+  Project,
+  ProjectSession,
+  LLMProvider,
+  ProviderCapabilityStatus,
+  ProviderModelsCacheInfo,
+} from '../../../types/app';
 import { escapeRegExp } from '../utils/chatFormatting';
 
 import { useFileMentions } from './useFileMentions';
@@ -39,20 +49,27 @@ interface UseChatComposerStateArgs {
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
   provider: LLMProvider;
-  permissionMode: PermissionMode | string;
+  providerCapabilityStatus: ProviderCapabilityStatus;
+  supportsSkills: boolean;
+  permissionMode: PermissionMode | string | null;
   cyclePermissionMode: () => void;
-  resolvePermissionModeForProvider: (provider: LLMProvider, requestedMode: PermissionMode | string) => PermissionMode;
+  resolvePermissionModeForProvider: (
+    provider: LLMProvider,
+    requestedMode: PermissionMode | string,
+  ) => PermissionMode | null;
   /**
    * Model every send and command carries: the open session's model when there
    * is one, otherwise the user's per-provider selection.
    */
-  currentProviderModel: string;
+  currentProviderModel: string | null;
   currentProviderEffort: string;
   isLoading: boolean;
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
   sendMessage: (message: unknown) => void;
+  /** Reads the live socket state immediately before claiming a queued draft. */
+  isWebSocketReady: () => boolean;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -191,14 +208,15 @@ const uploadAttachmentFiles = async (files: File[]): Promise<unknown[]> => {
 
 export type QueuedDraft = {
   content: string;
+  /** Provider identity required for backend validation outside this composer. */
+  provider?: LLMProvider;
   /** Browser files retained while this composer stays mounted, for editing. */
   attachments: File[];
   /** JSON-safe descriptors uploaded when the message is queued. */
   uploadedAttachments?: unknown[];
   /**
-   * Send options snapshotted at queue time. Persisted with the draft so the
-   * app-level auto-send can dispatch the message with the right model and
-   * permission settings while another session is being viewed.
+   * Candidate send options snapshotted at queue time. Every replay path
+   * revalidates model and permission values before dispatching.
    */
   options?: QueuedSendOptions;
 };
@@ -208,6 +226,7 @@ const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
   return saved
     ? {
         content: saved.content,
+        provider: saved.provider,
         attachments: [],
         uploadedAttachments: saved.attachments ?? saved.images,
         options: saved.options,
@@ -238,6 +257,8 @@ export function useChatComposerState({
   selectedSession,
   currentSessionId,
   provider,
+  providerCapabilityStatus,
+  supportsSkills,
   permissionMode,
   cyclePermissionMode,
   resolvePermissionModeForProvider,
@@ -248,6 +269,7 @@ export function useChatComposerState({
   canAbortSession,
   tokenBudget,
   sendMessage,
+  isWebSocketReady,
   sendByCtrlEnter,
   onSessionProcessing,
   onSessionEstablished,
@@ -513,6 +535,8 @@ export function useChatComposerState({
   } = useSlashCommands({
     selectedProject,
     provider,
+    providerCapabilityStatus,
+    supportsSkills,
     input,
     setInput,
     textareaRef,
@@ -625,19 +649,17 @@ export function useChatComposerState({
   // send time for immediate sends and at queue time for queued ones, so a
   // queued message keeps the provider settings it was composed under even if
   // it is later dispatched outside this composer (app-level auto-send).
-  const buildSendOptions = useCallback((currentInput: string): QueuedSendOptions => {
+  const buildSendOptions = useCallback((currentInput: string): QueuedSendOptions | null => {
+    const resolvedPermissionMode = permissionMode
+      ? resolvePermissionModeForProvider(provider, permissionMode)
+      : null;
+    if (providerCapabilityStatus !== 'ready' || !currentProviderModel || !resolvedPermissionMode) {
+      return null;
+    }
+
     const getToolsSettings = () => {
       try {
-        const settingsKey =
-          provider === 'cursor'
-            ? 'cursor-tools-settings'
-            : provider === 'codex'
-              ? 'codex-settings'
-              : provider === 'opencode'
-                  ? 'opencode-settings'
-                : provider === 'pi'
-                    ? 'pi-settings'
-                  : 'claude-settings';
+        const settingsKey = getProviderToolsSettingsStorageKey(provider);
         const savedSettings = safeLocalStorage.getItem(settingsKey);
         if (savedSettings) {
           return JSON.parse(savedSettings);
@@ -658,7 +680,7 @@ export function useChatComposerState({
     return {
       model: currentProviderModel,
       effort: currentProviderEffort,
-      permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
+      permissionMode: resolvedPermissionMode,
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
@@ -668,6 +690,7 @@ export function useChatComposerState({
     currentProviderModel,
     permissionMode,
     provider,
+    providerCapabilityStatus,
     resolvePermissionModeForProvider,
     selectedSession,
   ]);
@@ -678,6 +701,10 @@ export function useChatComposerState({
       queuedSubmission?: QueuedDraft,
     ) => {
       event.preventDefault();
+      if (providerCapabilityStatus !== 'ready' || !permissionMode || !currentProviderModel) {
+        return;
+      }
+
       const currentInput = queuedSubmission?.content ?? inputValueRef.current;
       const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
       const previouslyUploadedAttachments = queuedSubmission?.uploadedAttachments ?? [];
@@ -689,6 +716,13 @@ export function useChatComposerState({
         )
         || !selectedProject
       ) {
+        return;
+      }
+
+      // Persisted options may come from an older capability/catalog snapshot.
+      // Rebuild them at replay time so every send uses currently validated state.
+      const sendOptions = buildSendOptions(currentInput);
+      if (!sendOptions) {
         return;
       }
 
@@ -705,7 +739,6 @@ export function useChatComposerState({
           return;
         }
 
-        const queuedOptions = buildSendOptions(currentInput);
         const queuedSessionKey = sessionKey;
         let uploadedAttachments: unknown[] = [];
         try {
@@ -723,15 +756,17 @@ export function useChatComposerState({
 
         const durableDraft: QueuedDraft = {
           content: currentInput,
+          provider,
           attachments: currentAttachments,
           uploadedAttachments,
-          options: queuedOptions,
+          options: sendOptions,
         };
         if (queuedSessionKey) {
           // Write the claim ticket synchronously after upload; this closes the
           // gap before React's persistence effect runs.
           writeQueuedMessage(queuedSessionKey, {
             content: durableDraft.content,
+            provider: durableDraft.provider,
             options: durableDraft.options,
             attachments: durableDraft.uploadedAttachments,
           });
@@ -745,13 +780,37 @@ export function useChatComposerState({
             processingSessionsRef.current
             && !processingSessionsRef.current.has(queuedSessionKey)
           ) {
+            const validatedOptions = durableDraft.provider
+              ? await resolveQueuedSendOptions({
+                  provider: durableDraft.provider,
+                  sessionId: queuedSessionKey,
+                  options: durableDraft.options,
+                })
+              : null;
+            const latestQueued = readQueuedMessage(queuedSessionKey);
+            if (
+              !validatedOptions
+              || sessionKeyRef.current === queuedSessionKey
+              || !processingSessionsRef.current
+              || processingSessionsRef.current.has(queuedSessionKey)
+              || !isWebSocketReady()
+              || !latestQueued
+              || latestQueued.content !== durableDraft.content
+              || latestQueued.provider !== durableDraft.provider
+              || JSON.stringify(latestQueued.options ?? {}) !== JSON.stringify(durableDraft.options ?? {})
+              || JSON.stringify(latestQueued.attachments ?? [])
+                !== JSON.stringify(durableDraft.uploadedAttachments ?? [])
+            ) {
+              return;
+            }
+
             clearQueuedMessage(queuedSessionKey);
             sendMessage({
               type: 'chat.send',
               sessionId: queuedSessionKey,
               content: durableDraft.content,
               options: {
-                ...(durableDraft.options ?? {}),
+                ...validatedOptions,
                 attachments: durableDraft.uploadedAttachments ?? [],
               },
             });
@@ -879,6 +938,10 @@ export function useChatComposerState({
         });
       }
 
+      if (!isWebSocketReady()) {
+        return;
+      }
+
       const attachmentRecords = uploadedAttachments as ChatAttachment[];
       const userMessage: ChatMessage = {
         type: 'user',
@@ -908,7 +971,7 @@ export function useChatComposerState({
         sessionId: targetSessionId,
         content: messageContent,
         options: {
-          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+          ...sendOptions,
           attachments: uploadedAttachments,
         },
       });
@@ -934,9 +997,13 @@ export function useChatComposerState({
       currentSessionId,
       executeCommand,
       isLoading,
+      isWebSocketReady,
+      currentProviderModel,
       onSessionProcessing,
       onSessionEstablished,
       provider,
+      providerCapabilityStatus,
+      permissionMode,
       resetCommandMenuState,
       scrollToBottom,
       selectedProject,
@@ -970,7 +1037,13 @@ export function useChatComposerState({
       return;
     }
 
-    if (isLoading || !queuedDraft) {
+    if (
+      isLoading
+      || !queuedDraft
+      || providerCapabilityStatus !== 'ready'
+      || !permissionMode
+      || !currentProviderModel
+    ) {
       return;
     }
 
@@ -994,7 +1067,15 @@ export function useChatComposerState({
       handleSubmitRef.current?.(createFakeSubmitEvent(), queuedDraft);
     }, delay);
     return () => clearTimeout(timer);
-  }, [isLoading, queuedDraft, sessionKey, setInput]);
+  }, [
+    currentProviderModel,
+    isLoading,
+    permissionMode,
+    providerCapabilityStatus,
+    queuedDraft,
+    sessionKey,
+    setInput,
+  ]);
 
   const editQueuedDraft = useCallback(() => {
     if (!queuedDraft) {
@@ -1064,6 +1145,7 @@ export function useChatComposerState({
     ) {
       writeQueuedMessage(sessionKey, {
         content: queuedDraft.content,
+        provider: queuedDraft.provider,
         options: queuedDraft.options,
         attachments: queuedDraft.uploadedAttachments,
       });
@@ -1215,10 +1297,10 @@ export function useChatComposerState({
 
   const handleGrantToolPermission = useCallback(
     (suggestion: { entry: string; toolName: string }) => {
-      if (!suggestion || provider !== 'claude') {
+      if (!suggestion) {
         return { success: false };
       }
-      return grantClaudeToolPermission(suggestion.entry);
+      return grantProviderToolPermission(provider, suggestion.entry);
     },
     [provider],
   );

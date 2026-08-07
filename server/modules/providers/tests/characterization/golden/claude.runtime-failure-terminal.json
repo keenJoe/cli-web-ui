@@ -1,0 +1,24 @@
+{
+  "events": [
+    {
+      "kind": "error",
+      "content": "model lookup failed",
+      "sessionId": "native-claude-1",
+      "provider": "claude",
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    },
+    {
+      "kind": "complete",
+      "provider": "claude",
+      "sessionId": "native-claude-1",
+      "actualSessionId": "native-claude-1",
+      "exitCode": 1,
+      "success": false,
+      "aborted": false,
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    }
+  ],
+  "boundSessionIds": []
+}

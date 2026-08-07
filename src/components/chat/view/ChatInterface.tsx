@@ -11,6 +11,7 @@ import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useSessionStore } from '../../../stores/useSessionStore';
+import { getProviderBrand } from '../../llm-logo-provider/providerBranding';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
@@ -62,21 +63,16 @@ function ChatInterface({
   const {
     provider,
     setProvider,
-    cursorModel,
-    setCursorModel,
-    claudeModel,
-    setClaudeModel,
-    codexModel,
-    setCodexModel,
+    providerModels,
+    setStoredProviderModel,
     currentProviderEffort,
     currentProviderEffortOptions,
     currentProviderModel,
     currentProviderModelOptions,
-    opencodeModel,
-    setOpenCodeModel,
-    piModel,
-    setPiModel,
     permissionMode,
+    providerCapabilityStatus,
+    supportsSkills,
+    supportsTokenUsage,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     availablePermissionModes,
@@ -137,6 +133,7 @@ function ChatInterface({
     statusCheckSentAtRef,
     lastSeqRef,
     sessionStore,
+    supportsTokenUsage,
   });
 
   // Brand-new conversation: the composer allocated a stable session id via
@@ -201,6 +198,8 @@ function ChatInterface({
     selectedSession,
     currentSessionId,
     provider,
+    providerCapabilityStatus,
+    supportsSkills,
     permissionMode,
     cyclePermissionMode,
     currentProviderModel,
@@ -210,6 +209,7 @@ function ChatInterface({
     canAbortSession,
     tokenBudget,
     sendMessage,
+    isWebSocketReady: () => ws?.readyState === WebSocket.OPEN,
     sendByCtrlEnter,
     onSessionProcessing,
     onSessionEstablished: handleSessionEstablished,
@@ -245,6 +245,7 @@ function ChatInterface({
     provider,
     selectedSession,
     currentSessionId,
+    supportsTokenUsage,
     setTokenBudget,
     pendingPermissionRequests,
     setPendingPermissionRequests,
@@ -304,16 +305,10 @@ function ChatInterface({
   // overlapping the last message.
   const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
 
-  const selectedProviderLabel =
-    provider === 'cursor'
-      ? t('messageTypes.cursor')
-      : provider === 'codex'
-        ? t('messageTypes.codex')
-        : provider === 'opencode'
-            ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-          : provider === 'pi'
-              ? t('messageTypes.pi', { defaultValue: 'Pi' })
-            : t('messageTypes.claude');
+  const providerMessageLabel = getProviderBrand(provider).messageLabel;
+  const selectedProviderLabel = t(providerMessageLabel.key, {
+    defaultValue: providerMessageLabel.defaultValue,
+  });
 
   if (!selectedProject) {
     return (
@@ -344,18 +339,11 @@ function ChatInterface({
           selectedSession={selectedSession}
           currentSessionId={currentSessionId}
           provider={provider}
+          providerCapabilityStatus={providerCapabilityStatus}
           setProvider={(nextProvider) => setProvider(nextProvider as Provider)}
           textareaRef={textareaRef}
-          claudeModel={claudeModel}
-          setClaudeModel={setClaudeModel}
-          cursorModel={cursorModel}
-          setCursorModel={setCursorModel}
-          codexModel={codexModel}
-          setCodexModel={setCodexModel}
-          opencodeModel={opencodeModel}
-          setOpenCodeModel={setOpenCodeModel}
-          piModel={piModel}
-          setPiModel={setPiModel}
+          providerModels={providerModels}
+          setStoredProviderModel={setStoredProviderModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
           tasksEnabled={tasksEnabled}
@@ -405,6 +393,7 @@ function ChatInterface({
           activity={sessionActivity}
           isLoading={isProcessing}
           onAbortSession={handleAbortSession}
+          providerCapabilityStatus={providerCapabilityStatus}
           permissionMode={permissionMode}
           availablePermissionModes={availablePermissionModes}
           onSelectPermissionMode={(mode) => selectPermissionMode(mode as PermissionMode)}
@@ -416,6 +405,7 @@ function ChatInterface({
           availableModelOptions={currentProviderModelOptions}
           onSelectModel={handleSelectComposerModel}
           modelsLoading={providerModelsLoading}
+          supportsTokenUsage={supportsTokenUsage}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}
           slashCommandsCount={slashCommandsCount}

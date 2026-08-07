@@ -175,8 +175,15 @@ export const sessionsDb = {
    * the duplicate is merged into the app row: its transcript path and name
    * are adopted and the duplicate row is removed. Runs in a transaction so
    * the sidebar can never observe both rows at once.
+   *
+   * Native ids are only unique per provider, so the duplicate lookup is
+   * qualified by `provider`. Without it, two providers that happen to mint the
+   * same native id string would merge into one row and the losing provider's
+   * session would be deleted. If both lookup branches match different rows,
+   * the row that already owns the provider-native mapping wins; deleting it
+   * first is required before the unique mapping can move to the app row.
    */
-  assignProviderSessionId(sessionId: string, providerSessionId: string): void {
+  assignProviderSessionId(sessionId: string, providerSessionId: string, provider: string): void {
     const db = getConnection();
 
     const merge = db.transaction(() => {
@@ -184,10 +191,21 @@ export const sessionsDb = {
         .prepare(
           `SELECT ${SESSION_ROW_COLUMNS} FROM sessions
            WHERE (session_id = ? OR provider_session_id = ?)
+             AND provider = ?
              AND session_id <> ?
+           ORDER BY
+             CASE WHEN provider_session_id = ? THEN 0 ELSE 1 END ASC,
+             datetime(COALESCE(updated_at, created_at)) DESC,
+             session_id ASC
            LIMIT 1`
         )
-        .get(providerSessionId, providerSessionId, sessionId) as SessionRow | undefined;
+        .get(
+          providerSessionId,
+          providerSessionId,
+          provider,
+          sessionId,
+          providerSessionId,
+        ) as SessionRow | undefined;
 
       if (duplicate) {
         db.prepare('DELETE FROM sessions WHERE session_id = ?').run(duplicate.session_id);
@@ -259,18 +277,23 @@ export const sessionsDb = {
    * The filesystem watcher only knows provider ids (they come from transcript
    * file names), so it uses this lookup to translate disk artifacts back to
    * the app-facing session row before broadcasting sidebar updates.
+   *
+   * A native id only identifies a session within its own provider, so callers
+   * must pass the owning provider; otherwise one provider could resolve to
+   * another provider's session row.
    */
-  getSessionByProviderSessionId(providerSessionId: string): SessionRow | null {
+  getSessionByProviderSessionId(providerSessionId: string, provider: string): SessionRow | null {
     const db = getConnection();
     const row = db
       .prepare(
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
          WHERE provider_session_id = ?
+           AND provider = ?
          ORDER BY updated_at DESC
          LIMIT 1`
       )
-      .get(providerSessionId) as SessionRow | undefined;
+      .get(providerSessionId, provider) as SessionRow | undefined;
 
     return normalizeSessionRow(row) ?? null;
   },
@@ -289,11 +312,16 @@ export const sessionsDb = {
    * later. That eventually self-heals, but on slow networks the user can still
    * briefly see two sidebar sessions for the same conversation.
    *
-   * This helper lets the synchronizer claim the pending app row first, so the
-   * provider id is attached before any watcher-created row exists. The result
-   * is simpler than frontend dedupe and keeps the race resolved at the source.
+   * This helper lets the synchronizer claim a recently-created pending app row
+   * first, so the provider id is attached before any watcher-created row exists.
+   * The mandatory lower bound excludes old NULL mappings left by migration
+   * deduplication; binding no row is recoverable, binding an unrelated row is not.
    */
-  findLatestPendingAppSession(provider: string, projectPath: string): SessionRow | null {
+  findLatestPendingAppSession(
+    provider: string,
+    projectPath: string,
+    createdAfter: Date,
+  ): SessionRow | null {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
     const row = db
@@ -304,10 +332,11 @@ export const sessionsDb = {
            AND project_path = ?
            AND provider_session_id IS NULL
            AND isArchived = 0
+           AND datetime(created_at) >= datetime(?)
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
          LIMIT 1`
       )
-      .get(provider, normalizedProjectPath) as SessionRow | undefined;
+      .get(provider, normalizedProjectPath, createdAfter.toISOString()) as SessionRow | undefined;
 
     return normalizeSessionRow(row) ?? null;
   },

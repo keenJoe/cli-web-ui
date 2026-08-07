@@ -22,6 +22,7 @@ interface UseChatRealtimeHandlersArgs {
   provider: LLMProvider;
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
+  supportsTokenUsage: boolean;
   setTokenBudget: (budget: Record<string, unknown> | null) => void;
   pendingPermissionRequests: PendingPermissionRequest[];
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
@@ -60,6 +61,7 @@ export function useChatRealtimeHandlers({
   provider,
   selectedSession,
   currentSessionId,
+  supportsTokenUsage,
   setTokenBudget,
   pendingPermissionRequests,
   setPendingPermissionRequests,
@@ -309,9 +311,13 @@ export function useChatRealtimeHandlers({
         }
 
         case 'status': {
-          if (msg.text === 'token_budget' && msg.tokenBudget) {
-            setTokenBudget(msg.tokenBudget as Record<string, unknown>);
-          } else if (msg.text && sid) {
+          if (msg.text === 'token_budget') {
+            if (supportsTokenUsage && msg.tokenBudget) {
+              setTokenBudget(msg.tokenBudget as Record<string, unknown>);
+            }
+            break;
+          }
+          if (msg.text && sid) {
             onSessionProcessing?.(sid, {
               statusText: msg.text as string,
               canInterrupt: msg.canInterrupt !== false,
@@ -333,6 +339,7 @@ export function useChatRealtimeHandlers({
     provider,
     selectedSession,
     currentSessionId,
+    supportsTokenUsage,
     setTokenBudget,
     pendingPermissionRequests,
     setPendingPermissionRequests,

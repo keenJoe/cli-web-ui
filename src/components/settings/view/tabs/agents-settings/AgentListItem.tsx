@@ -1,5 +1,6 @@
 import { cn } from '../../../../../lib/utils';
 import SessionProviderLogo from '../../../../llm-logo-provider/SessionProviderLogo';
+import { getProviderBrand } from '../../../../llm-logo-provider/providerBranding';
 import type { AgentProvider, AuthStatus } from '../../../types/types';
 
 type AgentListItemProps = {
@@ -10,49 +11,6 @@ type AgentListItemProps = {
   isMobile?: boolean;
 };
 
-type AgentConfig = {
-  name: string;
-  color: 'blue' | 'purple' | 'gray' | 'zinc';
-};
-
-const agentConfig: Record<AgentProvider, AgentConfig> = {
-  claude: {
-    name: 'Claude',
-    color: 'blue',
-  },
-  cursor: {
-    name: 'Cursor',
-    color: 'purple',
-  },
-  codex: {
-    name: 'Codex',
-    color: 'gray',
-  },
-  opencode: {
-    name: 'OpenCode',
-    color: 'zinc',
-  },
-  pi: {
-    name: 'Pi',
-    color: 'zinc',
-  },
-};
-
-const colorClasses = {
-  blue: {
-    dot: 'bg-blue-500',
-  },
-  purple: {
-    dot: 'bg-purple-500',
-  },
-  gray: {
-    dot: 'bg-foreground/60',
-  },
-  zinc: {
-    dot: 'bg-zinc-500',
-  },
-} as const;
-
 export default function AgentListItem({
   agentId,
   authStatus,
@@ -60,8 +18,7 @@ export default function AgentListItem({
   onClick,
   isMobile = false,
 }: AgentListItemProps) {
-  const config = agentConfig[agentId];
-  const colors = colorClasses[config.color];
+  const brand = getProviderBrand(agentId);
 
   if (isMobile) {
     return (
@@ -76,9 +33,9 @@ export default function AgentListItem({
       >
         <div className="flex items-center justify-center gap-1.5">
           <SessionProviderLogo provider={agentId} className="h-4 w-4 flex-shrink-0" />
-          <span className="truncate text-xs font-medium">{config.name}</span>
+          <span className="truncate text-xs font-medium">{brand.displayName}</span>
           {authStatus.authenticated && (
-            <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${colors.dot}`} />
+            <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${brand.dotClass}`} />
           )}
         </div>
       </button>
@@ -96,11 +53,11 @@ export default function AgentListItem({
       )}
     >
       <SessionProviderLogo provider={agentId} className="h-4 w-4 flex-shrink-0" />
-      <span>{config.name}</span>
+      <span>{brand.displayName}</span>
       {authStatus.authenticated ? (
-        <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${colors.dot}`} />
+        <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${brand.dotClass}`} />
       ) : authStatus.loading ? (
-        <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-muted-foreground/30 animate-pulse" />
+        <span className="h-1.5 w-1.5 flex-shrink-0 animate-pulse rounded-full bg-muted-foreground/30" />
       ) : null}
     </button>
   );

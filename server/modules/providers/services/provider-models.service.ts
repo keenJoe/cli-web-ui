@@ -140,7 +140,8 @@ const writeProviderModelsCacheFile = async (
  * place.
  */
 export const createProviderModelsService = (dependencies: ProviderModelsServiceDependencies = {}) => {
-  const resolveProvider = dependencies.resolveProvider ?? providerRegistry.resolveProvider;
+  const resolveProvider = dependencies.resolveProvider
+    ?? ((provider: LLMProvider) => providerRegistry.resolveProvider(provider));
   const cachePath = dependencies.cachePath ?? getProviderModelsCachePath();
   const sessions = dependencies.sessions ?? sessionsDb;
   const now = dependencies.now ?? (() => Date.now());
@@ -447,6 +448,33 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     return recordedModel || normalizedRequestedModel || undefined;
   };
 
+  /**
+   * Resolves the model input for one provider run without provider-id policy.
+   *
+   * Explicit caller choices always win. An omitted choice loads the selected
+   * provider's catalog only when its model facet requests catalog-default
+   * injection; otherwise the runtime/CLI receives `undefined` and owns its
+   * native default selection.
+   */
+  const resolveRunModel = async (
+    provider: LLMProvider,
+    requestedModel?: string | null,
+  ): Promise<string | undefined> => {
+    const normalizedRequestedModel = typeof requestedModel === 'string'
+      ? requestedModel.trim()
+      : '';
+    if (normalizedRequestedModel) {
+      return normalizedRequestedModel;
+    }
+
+    const models = resolveProvider(provider).models;
+    if (models.usesCatalogDefaultWhenModelOmitted !== true) {
+      return undefined;
+    }
+
+    return (await getProviderModels(provider)).models.DEFAULT;
+  };
+
   const clearCache = (): void => {
     memoryCache.clear();
     pendingRequests.clear();
@@ -459,6 +487,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     setSessionModel,
     resolveSessionModel,
     resolveResumeModel,
+    resolveRunModel,
     clearCache,
   };
 };

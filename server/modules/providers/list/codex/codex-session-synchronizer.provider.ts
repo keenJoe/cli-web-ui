@@ -26,12 +26,19 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly codexHome = path.join(os.homedir(), '.codex');
 
   /**
+   * Resolves Codex's rollout transcript root for the sessions watcher.
+   */
+  getWatchRoots(): string[] {
+    return [path.join(this.codexHome, 'sessions')];
+  }
+
+  /**
    * Scans ~/.codex/sessions and upserts discovered sessions into DB.
    */
   async synchronize(since?: Date): Promise<number> {
     const nameMap = await buildLookupMap(path.join(this.codexHome, 'session_index.jsonl'), 'id', 'thread_name');
     const files = await findFilesRecursivelyCreatedAfter(
-      path.join(this.codexHome, 'sessions'),
+      this.getWatchRoots()[0],
       '.jsonl',
       since ?? null
     );
@@ -43,7 +50,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
         continue;
       }
 
-      const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
+      const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId, this.provider)
         ?? sessionsDb.getSessionById(parsed.sessionId);
       if (existingSession) {
         // If session name is untitled and we now have a name, update it
@@ -124,7 +131,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
 
     // App-created sessions are keyed by an app id, so disk-discovered provider
     // ids must be resolved through the provider-id mapping first.
-    const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
+    const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId, this.provider)
       ?? sessionsDb.getSessionById(parsed.sessionId);
     const existingSessionName = existingSession?.custom_name;
     if (existingSessionName && existingSessionName !== 'Untitled Codex Session') {

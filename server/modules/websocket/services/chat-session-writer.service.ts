@@ -13,9 +13,9 @@ type ChatSessionWriterOptions = {
   /** Provider-native id when resuming an existing session, otherwise null. */
   providerSessionId: string | null;
   /**
-   * Invoked the moment the provider runtime reveals its native session id
-   * (either via `setSessionId` or a `session_created` event). The registry
-   * persists the app-id-to-provider-id mapping from this callback.
+   * Invoked after the coordinator has persisted the accepted native session id.
+   * The registry mirrors it for replay and canonical sidebar broadcasts only;
+   * this callback never writes the app-id-to-provider-id mapping.
    */
   onProviderSessionId: (providerSessionId: string) => void;
   /**
@@ -36,12 +36,13 @@ type ChatSessionWriterOptions = {
  * but everything that flows through
  * it is translated from the provider's world into the app's protocol:
  *
- * - `session_created` events are swallowed and turned into a provider-id
- *   mapping; the frontend never learns provider-native ids.
+ * - `session_created` events are swallowed and mirrored into registry state;
+ *   the coordinator already persisted the mapping and the frontend never
+ *   learns provider-native ids.
  * - every other event gets `sessionId` remapped to the app session id and a
  *   per-run `seq` assigned before being forwarded.
- * - `setSessionId(...)` calls (used by runtimes to label captured ids) are
- *   intercepted and recorded as the provider-id mapping as well.
+ * - `setSessionId(...)` calls are intercepted after coordinator persistence and
+ *   recorded only for replay/broadcast metadata.
  */
 export class ChatSessionWriter {
   ws: RealtimeClientConnection;
@@ -100,8 +101,9 @@ export class ChatSessionWriter {
   }
 
   /**
-   * Emits the synthetic terminal `complete` for runs that ended without one
-   * (runtime crash before completing, or user abort).
+   * Projects a synthetic terminal only for compatibility safety paths where the
+   * gateway/coordinator did not already project one. Normal runtime outcomes and
+   * accepted aborts remain owned by `ProviderRunCoordinator`.
    */
   sendComplete(opts: { exitCode: number; aborted?: boolean }): void {
     const message = createCompleteMessage({

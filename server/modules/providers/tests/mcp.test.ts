@@ -348,3 +348,13 @@ test('providerMcpService global adder writes to all providers and rejects unsupp
   }
 });
 
+test('R3: Pi MCP reads reject the missing facet instead of returning empty success', async () => {
+  await assert.rejects(
+    () => providerMcpService.listProviderMcpServers('pi'),
+    (error: unknown) => (
+      error instanceof AppError
+      && error.code === 'PROVIDER_CAPABILITY_UNSUPPORTED'
+      && error.statusCode === 400
+    ),
+  );
+});

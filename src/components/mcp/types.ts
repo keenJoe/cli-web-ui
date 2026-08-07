@@ -1,12 +1,18 @@
 import type { LLMProvider } from '../../types/app';
 
-// Pi does not support MCP, so it is excluded from the configurable providers.
-export type McpProvider = Exclude<LLMProvider, 'pi'>;
+export type McpProvider = LLMProvider;
 export type McpScope = 'user' | 'local' | 'project';
 export type McpTransport = 'stdio' | 'http' | 'sse';
 export type McpImportMode = 'form' | 'json';
 export type McpFormMode = 'provider' | 'global';
 export type KeyValueMap = Record<string, string>;
+
+export type ProviderMcpCapabilities = {
+  supportedScopes: McpScope[];
+  supportedTransports: McpTransport[];
+  supportsWorkingDirectory: boolean;
+  supportsEnvironmentVariableReferences: boolean;
+};
 
 // Internal MCP shape; `projectId` replaces the legacy `name` field from the
 // projectName → projectId migration.

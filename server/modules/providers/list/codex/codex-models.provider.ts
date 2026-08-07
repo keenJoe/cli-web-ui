@@ -131,6 +131,8 @@ const buildCodexModelsDefinition = (models: CodexCachedModel[]): ProviderModelsD
 };
 
 export class CodexProviderModels implements IProviderModels {
+  readonly usesCatalogDefaultWhenModelOmitted = true as const;
+
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
     try {
       const raw = await readFile(CODEX_MODELS_CACHE_PATH, 'utf8');

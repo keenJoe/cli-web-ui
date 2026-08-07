@@ -1,0 +1,10 @@
+{
+  "used": 184,
+  "total": 272000,
+  "inputTokens": 120,
+  "outputTokens": 64,
+  "breakdown": {
+    "input": 120,
+    "output": 64
+  }
+}

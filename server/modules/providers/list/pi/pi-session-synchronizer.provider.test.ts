@@ -14,7 +14,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = databasePath;
-  await initializeDatabase();
+  await initializeDatabase([]);
 
   try {
     await runTest();
@@ -81,7 +81,7 @@ test('Pi synchronizer discovers a new session and upserts its metadata', { concu
       const processed = await synchronizer.synchronize();
 
       assert.equal(processed, 1);
-      const row = sessionsDb.getSessionByProviderSessionId(SESSION_ID);
+      const row = sessionsDb.getSessionByProviderSessionId(SESSION_ID, 'pi');
       assert.ok(row, 'session should be upserted');
       assert.equal(row?.provider, 'pi');
       assert.equal(row?.project_path, WORKSPACE);
@@ -123,8 +123,8 @@ test('Pi synchronizer skips a corrupt file and still upserts the good one', { co
       });
 
       assert.equal(processed, 1);
-      assert.ok(sessionsDb.getSessionByProviderSessionId(SESSION_ID), 'good session upserted');
-      assert.equal(sessionsDb.getSessionByProviderSessionId('bad-id'), null, 'corrupt session skipped');
+      assert.ok(sessionsDb.getSessionByProviderSessionId(SESSION_ID, 'pi'), 'good session upserted');
+      assert.equal(sessionsDb.getSessionByProviderSessionId('bad-id', 'pi'), null, 'corrupt session skipped');
     });
   } finally {
     if (original === undefined) {

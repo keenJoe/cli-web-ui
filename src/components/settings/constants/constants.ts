@@ -19,6 +19,7 @@ import type {
   ProjectSortOrder,
   SettingsMainTab,
 } from '../types/types';
+import { PROVIDER_IDS } from '../../llm-logo-provider/providerBranding';
 
 export type SettingsMainTabMeta = {
   id: SettingsMainTab;
@@ -39,7 +40,7 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   { id: 'about', label: 'About', keywords: 'about version info', icon: Info },
 ];
 
-export const AGENT_PROVIDERS: AgentProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'pi'];
+export const AGENT_PROVIDERS: AgentProvider[] = PROVIDER_IDS;
 export const AGENT_CATEGORIES: AgentCategory[] = ['account', 'permissions', 'mcp'];
 
 export const DEFAULT_PROJECT_SORT_ORDER: ProjectSortOrder = 'name';

@@ -8,6 +8,7 @@ import {
   createProviderModelsService,
   PROVIDER_MODELS_CACHE_TTL_MS,
 } from '@/modules/providers/services/provider-models.service.js';
+import { providerRegistry } from '@/modules/providers/index.js';
 import type {
   LLMProvider,
   ProviderCurrentActiveModel,
@@ -447,4 +448,52 @@ test('resolveResumeModel never lets provider session state override the requeste
 
   assert.equal(model, 'gpt-5.5');
   assert.equal(providerLookups, 0);
+});
+
+test('resolveRunModel follows provider-owned omitted-model policy', async () => {
+  let catalogLoads = 0;
+  const service = createProviderModelsService({
+    cachePath: createEphemeralCachePath(),
+    resolveProvider: (provider) => ({
+      models: {
+        usesCatalogDefaultWhenModelOmitted: provider === 'codex',
+        getSupportedModels: async () => {
+          catalogLoads += 1;
+          return createModels(`${provider}-default`);
+        },
+        getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+      },
+    } as never),
+  });
+
+  assert.equal(await service.resolveRunModel('claude'), undefined);
+  assert.equal(await service.resolveRunModel('codex'), 'codex-default');
+  assert.equal(await service.resolveRunModel('claude', 'requested-model'), 'requested-model');
+  assert.equal(catalogLoads, 1);
+});
+
+test('resolveRunModel keeps the production registry resolver bound to its owner', async () => {
+  const service = createProviderModelsService({
+    cachePath: createEphemeralCachePath(),
+    sessions: createSessionStore(),
+  });
+
+  assert.equal(await service.resolveRunModel('claude'), undefined);
+});
+
+test('five provider model facets characterize their omitted-model policy', () => {
+  const policies = Object.fromEntries(
+    providerRegistry.listProviders().map((provider) => [
+      provider.id,
+      provider.models.usesCatalogDefaultWhenModelOmitted === true ? 'catalog' : 'implicit',
+    ]),
+  );
+
+  assert.deepEqual(policies, {
+    claude: 'implicit',
+    codex: 'catalog',
+    cursor: 'implicit',
+    opencode: 'catalog',
+    pi: 'catalog',
+  });
 });

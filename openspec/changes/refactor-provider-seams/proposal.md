@@ -46,6 +46,7 @@
 **阶段 4 — dispatcher 与前端收敛**
 - Agent API 与 WebSocket 统一走 generic coordinator，移除逐 provider `queryX` 与 `if/else`；从 `agent.routes.ts`（1301 行、`@ts-nocheck`）分步提取业务编排并移除 `@ts-nocheck`。
 - frontend 每-provider model state 收敛为 `Partial<Record<LLMProvider, string>>`，行为由 backend capability 驱动。
+- omitted-model 策略随 provider model facet 注册，generic Agent dispatcher 不维护 provider-id 默认模型矩阵；该重构保持现有五 provider 的缺省模型行为，不新增 BREAKING。
 
 ## BREAKING（对外可观测）
 
@@ -78,3 +79,15 @@
 - **Backend**：`provider.registry.ts`、`services/provider-capabilities.service.ts`、`services/provider-token-usage.service.ts`、`services/mcp.service.ts`、`services/sessions-watcher.service.ts`、`services/session-synchronizer.service.ts`、`modules/agent/agent.routes.ts`、`modules/agent/agent.module.ts`、`modules/websocket/services/*`，以及 5 个 provider 的 facet 挂载与 runtime 适配。
 - **Frontend**：`src/components/chat/hooks/useChatProviderState.ts`（model state 收敛 + 删除静态 fallback 矩阵）、`src/components/chat/constants/providerEffort.ts`、依赖 per-provider model 的 4 个组件。
 - **仓库规范**：`.agents/skills/backend-module-standards/SKILL.md` 要求 `server/modules/` 下全 TypeScript、动到的 JS 需迁 TS。legacy adapter 是过渡措施，必须带退出条件，不得成为永久中间层。
+
+## 附带修复（与本重构无关，建议单独提交）
+
+执行任务组 1 时发现 **`npm test` 在本 change 开始前就是坏的**，属仓库级既有缺陷：
+
+- 实测（HEAD 干净 worktree）：108 个用例，47 通过，**61 失败**。
+- 根因：`tsx` 从仓库根启动时选中根 `tsconfig.json`（前端配置），其中没有 `@/*` → `server/*` 的 paths 映射，所有 `import ... from '@/shared/...'` 解析失败（`ERR_MODULE_NOT_FOUND`）。
+- 修复：`package.json` 的 `test` 脚本加 `cross-env TSX_TSCONFIG_PATH=server/tsconfig.json`（`cross-env` 已是 devDependency）。修复后 375 用例全绿。
+
+**影响 test-definition 的一条门禁**：原文「`npm test` 全绿」是基于错误前提写下的——该条件此前从未成立。修复后该门禁才首次可用。
+
+此改动不属于 provider 接缝重构，**建议从本 change 的 diff 中拆出单独提交**，以免污染重构的变更集。

@@ -11,8 +11,8 @@ export const providerMcpService = {
     providerName: string,
     options?: { workspacePath?: string },
   ): Promise<Record<McpScope, ProviderMcpServer[]>> {
-    const provider = providerRegistry.resolveProvider(providerName);
-    return provider.mcp.listServers(options);
+    const mcp = providerRegistry.requireFacet(providerName, 'mcp');
+    return mcp.listServers(options);
   },
 
   /**
@@ -23,8 +23,8 @@ export const providerMcpService = {
     scope: McpScope,
     options?: { workspacePath?: string },
   ): Promise<ProviderMcpServer[]> {
-    const provider = providerRegistry.resolveProvider(providerName);
-    return provider.mcp.listServersForScope(scope, options);
+    const mcp = providerRegistry.requireFacet(providerName, 'mcp');
+    return mcp.listServersForScope(scope, options);
   },
 
   /**
@@ -34,8 +34,8 @@ export const providerMcpService = {
     providerName: string,
     input: UpsertProviderMcpServerInput,
   ): Promise<ProviderMcpServer> {
-    const provider = providerRegistry.resolveProvider(providerName);
-    return provider.mcp.upsertServer(input);
+    const mcp = providerRegistry.requireFacet(providerName, 'mcp');
+    return mcp.upsertServer(input);
   },
 
   /**
@@ -45,8 +45,8 @@ export const providerMcpService = {
     providerName: string,
     input: { name: string; scope?: McpScope; workspacePath?: string },
   ): Promise<{ removed: boolean; provider: LLMProvider; name: string; scope: McpScope }> {
-    const provider = providerRegistry.resolveProvider(providerName);
-    return provider.mcp.removeServer(input);
+    const mcp = providerRegistry.requireFacet(providerName, 'mcp');
+    return mcp.removeServer(input);
   },
 
   /**
@@ -66,6 +66,9 @@ export const providerMcpService = {
     const results: Array<{ provider: LLMProvider; created: boolean; error?: string }> = [];
     const providers = providerRegistry.listProviders();
     for (const provider of providers) {
+      if (!provider.mcp) {
+        continue;
+      }
       try {
         await provider.mcp.upsertServer({ ...input, scope });
         results.push({ provider: provider.id, created: true });
@@ -95,6 +98,9 @@ export const providerMcpService = {
     const results: Array<{ provider: LLMProvider; removed: boolean; error?: string }> = [];
     const providers = providerRegistry.listProviders();
     for (const provider of providers) {
+      if (!provider.mcp) {
+        continue;
+      }
       try {
         const result = await provider.mcp.removeServer(input);
         results.push({ provider: provider.id, removed: result.removed });

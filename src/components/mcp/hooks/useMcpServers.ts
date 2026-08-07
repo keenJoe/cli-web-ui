@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
-import { MCP_GLOBAL_SUPPORTED_TRANSPORTS, MCP_PROVIDER_NAMES, MCP_SUPPORTED_SCOPES } from '../constants';
+import { GLOBAL_MCP_CAPABILITIES, MCP_PROVIDER_NAMES } from '../constants';
 import type {
   ApiResponse,
   GlobalMcpServerResult,
@@ -10,6 +10,7 @@ import type {
   McpProvider,
   McpScope,
   McpTransport,
+  ProviderMcpCapabilities,
   ProviderMcpServer,
   UpsertProviderMcpServerPayload,
 } from '../types';
@@ -288,9 +289,10 @@ const replaceScopedServers = (
 type UseMcpServersArgs = {
   selectedProvider: McpProvider;
   currentProjects: McpProject[];
+  mcpCapabilities: ProviderMcpCapabilities;
 };
 
-export function useMcpServers({ selectedProvider, currentProjects }: UseMcpServersArgs) {
+export function useMcpServers({ selectedProvider, currentProjects, mcpCapabilities }: UseMcpServersArgs) {
   const [servers, setServers] = useState<ProviderMcpServer[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -301,6 +303,7 @@ export function useMcpServers({ selectedProvider, currentProjects }: UseMcpServe
   const [isGlobalFormOpen, setIsGlobalFormOpen] = useState(false);
   const [editingServer, setEditingServer] = useState<ProviderMcpServer | null>(null);
   const activeLoadIdRef = useRef(0);
+  const { supportedScopes } = mcpCapabilities;
 
   const projectTargets = useMemo(() => createProjectTargets(currentProjects), [currentProjects]);
   const cacheKey = useMemo(() => getCacheKey(selectedProvider, projectTargets), [projectTargets, selectedProvider]);
@@ -329,7 +332,6 @@ export function useMcpServers({ selectedProvider, currentProjects }: UseMcpServe
     setIsLoadingProjectScopes(false);
     setLoadError(null);
 
-    const supportedScopes = MCP_SUPPORTED_SCOPES[selectedProvider];
     let nextServers: ProviderMcpServer[] = cachedEntry && !options.force ? cachedEntry.servers : [];
     let firstError: string | null = null;
 
@@ -401,7 +403,7 @@ export function useMcpServers({ selectedProvider, currentProjects }: UseMcpServe
     setServers(finalServers);
     setLoadError(firstError);
     setIsLoadingProjectScopes(false);
-  }, [cacheKey, projectTargets, selectedProvider]);
+  }, [cacheKey, projectTargets, selectedProvider, supportedScopes]);
 
   const openForm = useCallback((server?: ProviderMcpServer) => {
     setEditingServer(server || null);
@@ -423,7 +425,7 @@ export function useMcpServers({ selectedProvider, currentProjects }: UseMcpServe
 
   const submitForm = useCallback(
     async (formData: McpFormState, serverBeingEdited: ProviderMcpServer | null) => {
-      const payload = createMcpPayloadFromForm(selectedProvider, formData);
+      const payload = createMcpPayloadFromForm(selectedProvider, formData, mcpCapabilities);
       if (payload.scope !== 'user' && !payload.workspacePath) {
         throw new Error('Select a project for project-scoped MCP servers');
       }
@@ -439,15 +441,13 @@ export function useMcpServers({ selectedProvider, currentProjects }: UseMcpServe
       setSaveStatus('success');
       closeForm();
     },
-    [cacheKey, closeForm, refreshServers, selectedProvider],
+    [cacheKey, closeForm, mcpCapabilities, refreshServers, selectedProvider],
   );
 
   const submitGlobalForm = useCallback(
     async (formData: McpFormState) => {
       const payload = createMcpPayloadFromForm(selectedProvider, formData, {
-        supportedTransports: MCP_GLOBAL_SUPPORTED_TRANSPORTS,
-        supportsWorkingDirectory: false,
-        includeProviderSpecificFields: false,
+        ...GLOBAL_MCP_CAPABILITIES,
         unsupportedTransportMessage: (transport) =>
           `Add MCP Server supports only stdio and http across all providers, not ${transport}.`,
       });

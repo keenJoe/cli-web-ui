@@ -438,6 +438,8 @@ const runOpenCodeModelsCommand = (): Promise<string> => new Promise((resolve, re
 });
 
 export class OpenCodeProviderModels implements IProviderModels {
+  readonly usesCatalogDefaultWhenModelOmitted = true as const;
+
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
     try {
       const stdout = await runOpenCodeModelsCommand();

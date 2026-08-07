@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '../../../../../../lib/utils';
+import { getProviderBrand } from '../../../../../llm-logo-provider/providerBranding';
 import type { AgentCategoryTabsSectionProps } from '../types';
 
 export default function AgentCategoryTabsSection({
@@ -31,7 +32,7 @@ export default function AgentCategoryTabsSection({
             {category === 'permissions' && t('tabs.permissions')}
             {category === 'mcp' && t('tabs.mcpServers')}
             {category === 'skills' && t('tabs.skills', {
-              defaultValue: selectedAgent === 'opencode' ? 'Shared Skills' : 'Skills',
+              defaultValue: getProviderBrand(selectedAgent).skillsLabel,
             })}
           </button>
         ))}

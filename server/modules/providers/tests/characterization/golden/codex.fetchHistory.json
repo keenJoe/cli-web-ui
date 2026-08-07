@@ -1,0 +1,62 @@
+{
+  "messages": [
+    {
+      "id": "<generated-id>",
+      "sessionId": "app-session-codex",
+      "timestamp": "2026-01-02T03:04:00.000Z",
+      "provider": "codex",
+      "kind": "text",
+      "role": "user",
+      "content": "Show me the README"
+    },
+    {
+      "id": "<generated-id>",
+      "sessionId": "app-session-codex",
+      "timestamp": "2026-01-02T03:04:01.000Z",
+      "provider": "codex",
+      "kind": "thinking",
+      "content": "Plan the edit."
+    },
+    {
+      "id": "<generated-id>",
+      "sessionId": "app-session-codex",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "provider": "codex",
+      "kind": "text",
+      "role": "assistant",
+      "content": "Here is what I found."
+    },
+    {
+      "id": "<generated-id>",
+      "sessionId": "app-session-codex",
+      "timestamp": "2026-01-02T03:04:06.000Z",
+      "provider": "codex",
+      "kind": "tool_use",
+      "toolName": "Bash",
+      "toolInput": "{\"command\":\"cat README.md\"}",
+      "toolId": "call_1",
+      "toolResult": {
+        "content": "# Title",
+        "isError": false
+      }
+    },
+    {
+      "id": "<generated-id>",
+      "sessionId": "app-session-codex",
+      "timestamp": "2026-01-02T03:04:07.000Z",
+      "provider": "codex",
+      "kind": "tool_result",
+      "toolId": "call_1",
+      "content": "# Title",
+      "isError": false
+    }
+  ],
+  "total": 4,
+  "hasMore": false,
+  "offset": 0,
+  "limit": null,
+  "tokenUsage": {
+    "used": 184,
+    "total": 272000
+  }
+}

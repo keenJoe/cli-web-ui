@@ -17,7 +17,7 @@ import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
 import type { QueuedDraft } from '../../hooks/useChatComposerState';
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
 import type { PendingPermissionRequest, PermissionMode } from '../../types/types';
-import type { ProviderModelOption } from '../../../../types/app';
+import type { ProviderCapabilityStatus, ProviderModelOption } from '../../../../types/app';
 import {
   PromptInput,
   PromptInputHeader,
@@ -64,17 +64,19 @@ interface ChatComposerProps {
   activity: SessionActivity | null;
   isLoading: boolean;
   onAbortSession: () => void;
-  permissionMode: PermissionMode | string;
+  providerCapabilityStatus: ProviderCapabilityStatus;
+  permissionMode: PermissionMode | string | null;
   availablePermissionModes: (PermissionMode | string)[];
   onSelectPermissionMode: (mode: PermissionMode | string) => void;
   providerLabel: string;
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
-  model: string;
+  model: string | null;
   availableModelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
+  supportsTokenUsage: boolean;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
   slashCommandsCount: number;
@@ -128,6 +130,7 @@ export default function ChatComposer({
   activity,
   isLoading,
   onAbortSession,
+  providerCapabilityStatus,
   permissionMode,
   availablePermissionModes,
   onSelectPermissionMode,
@@ -139,6 +142,7 @@ export default function ChatComposer({
   availableModelOptions,
   onSelectModel,
   modelsLoading,
+  supportsTokenUsage,
   tokenBudget,
   onShowTokenUsage,
   slashCommandsCount,
@@ -229,6 +233,7 @@ export default function ChatComposer({
 
   const hasQueuedDraft = Boolean(queuedDraft);
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
+  const isComposerReady = providerCapabilityStatus === 'ready' && Boolean(permissionMode) && Boolean(model);
   const submitHint = canQueueDraft
     ? hasQueuedDraft
       ? t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
@@ -393,7 +398,11 @@ export default function ChatComposer({
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
             )}
 
-            <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+            <TokenUsageSummary
+              supported={supportsTokenUsage}
+              usage={tokenBudget}
+              onClick={onShowTokenUsage}
+            />
 
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}
@@ -432,6 +441,7 @@ export default function ChatComposer({
             </div>
 
             <ComposerModelMenu
+              capabilityStatus={providerCapabilityStatus}
               effort={effort}
               effortOptions={availableEffortOptions}
               onSelectEffort={onSelectEffort}
@@ -442,6 +452,7 @@ export default function ChatComposer({
             />
 
             <ComposerPermissionMenu
+              capabilityStatus={providerCapabilityStatus}
               permissionMode={permissionMode}
               permissionModes={availablePermissionModes}
               onSelectPermissionMode={onSelectPermissionMode}
@@ -465,13 +476,17 @@ export default function ChatComposer({
                       : undefined
               }
               disabled={
-                isLoading
-                  ? false
+                canQueueDraft
+                  ? !isComposerReady
+                  : isLoading
+                    ? false
                   : isRecording
                     ? false
                     : isTranscribing
                       ? true
-                      : !input.trim() && attachedFiles.length === 0
+                      : !isComposerReady
+                        ? true
+                        : !input.trim() && attachedFiles.length === 0
               }
               aria-label={submitAriaLabel}
               title={submitAriaLabel}

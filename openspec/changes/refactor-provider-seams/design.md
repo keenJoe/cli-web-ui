@@ -29,7 +29,7 @@ Pi 的**代码**已合入主干（`11fc015`、`6c5089b`），中央文件在代�
 | E9 | `[CONFIRMED]` | `IProviderRuntime.run(command, options:AnyRecord, writer, context)`，`abort(sessionId)`；`ProviderRuntimeWriter.send(data: unknown)` 全无类型，并带 `isWebSocketWriter`/`isSSEStreamWriter` 传输标记 | `server/shared/interfaces.ts:30-39`、`server/shared/types.ts:287-293` | 中 |
 | E10 | `[CONFIRMED]` | runtime 中**只有 4 个是 `.js`**（claude/codex/cursor/opencode）；**Pi runtime 已是 TypeScript** | `list/{claude,codex,cursor,opencode}/*-runtime.provider.js`、`list/pi/pi-runtime.provider.ts` | 低 |
 | E11 | `[CONFIRMED]` | 已有 provider-native mapping 测试存在，路径在 `server/` 下（不在根 `database/`），已被 `npm test` 的 `server/**/*.test.ts` glob 覆盖 | `server/modules/database/tests/sessions-provider-mapping.test.ts` | 中 |
-| E12 | `[PENDING_VERIFY]` | 现网 `sessions` 表是否已存在跨 provider 相同 native id 的碰撞行 | 迁移前须对真实库查询确认 | 高 |
+| E12 | `[CONFIRMED]` | 现网 `sessions` 表**不存在**跨 provider 相同 native id 的碰撞行，也不存在同 provider 重复 native id。已于任务 2.1 对真实库 `~/.cloudcli/auth.db` 实查：总 506 行（claude 294 / codex 200 / opencode 6 / pi 6），`provider_session_id` 非空 506 行，同 provider 重复 0 组，跨 provider 撞号 0 组 | 真实库只读查询，任务 2.1 留证 | 已消解 |
 | E13 | `[CONFIRMED]` | **WebSocket 路径已经实现「恰好一个终态」**：`decorateAndRecordEvent` 对 `complete` 做 first-wins 去重，注释明写 "Exactly-one-complete contract" | `websocket/services/chat-run-registry.service.ts:129-136`（注释 130，去重判断 134，接线 244） | 高 |
 | E13b | `[CONFIRMED]` | **HTTP/SSE 路径不走 `chatRunRegistry`**，因此没有任何终态去重；`agent.routes.ts` 自建 SSE writer | `agent.routes.ts:486`；`chatRunRegistry` 仅被 `chat-websocket.service.ts` 引用 | 高 |
 | E13c | `[CONFIRMED]` | 4 个 `.js` runtime 各自维护一套**互不相同**的终态簿记：claude 用模块级 `abortedSessionIds` Set、codex 用 `session.status`+`abortController.signal`、cursor/opencode 用 `completeSent`+`process.aborted` | `claude-runtime.provider.js:42,703`；`codex-runtime.provider.js:377,399`；`cursor-runtime.provider.js:307,336`；`opencode-runtime.provider.js:348,391` | 中 |
@@ -40,7 +40,7 @@ Pi 的**代码**已合入主干（`11fc015`、`6c5089b`），中央文件在代�
 
 - [x] 每条现存代码陈述已登记，路径与行号已按真实仓库核实。
 - [x] 无 INFERRED 项混入实施结论。
-- [x] 高风险项 E7、E13、E13b、E14 均为 CONFIRMED；E12 标 PENDING_VERIFY，迁移前必须核实真实数据（涉及不可逆数据合并，硬规则要求）。
+- [x] 高风险项 E7、E13、E13b、E14 均为 CONFIRMED；E12 已于任务 2.1 对真实库实查并消解——**零重复行，迁移无需有损合并**，可直接建部分唯一索引。
 
 ## 目标 / 非目标
 
@@ -85,7 +85,7 @@ Pi 的**代码**已合入主干（`11fc015`、`6c5089b`），中央文件在代�
 - coordinator 的**真实新增收益**有两条：
   1. **HTTP/SSE 路径当前完全没有终态去重**（E13b）。这是唯一「修复了实际缺陷」的部分。
   2. **消除 E13c 的四套互不相同的终态簿记**（`abortedSessionIds` / `session.status` / `completeSent` / `process.aborted`），这是维护性收益，也是本阶段成本最高的部分。
-- 因此本阶段排在阶段 3，**在身份修复与能力收敛之后**；若排期紧张，可只做「SSE 路径接入 coordinator」这一子集先行止血，runtime 迁移延后。
+- 因此本阶段排在阶段 3，**在身份修复与能力收敛之后**。若排期紧张，可延后 runtime 簿记清理，但「SSE 路径接入 coordinator」只有连同 HTTP abort 入口与 transport 接线一起完成才构成可发布止血；仅实现 coordinator 或仅迁 Pi runtime 都不能令 R17 转绿。
 
 替代方案：直接重写 4 个 runtime——被否，回归风险过大。适配器把 typed request↔旧 options、旧 writer event↔typed sink、`abort(sessionId)`↔`AbortSignal` 互转，并拦截旧 runtime 的 `complete/session_created`（E9/E10）。
 
@@ -102,6 +102,12 @@ Pi 的**代码**已合入主干（`11fc015`、`6c5089b`），中央文件在代�
 **决策 6：删除前端静态 fallback 权限矩阵，首屏呈现「能力未就绪」而非猜测。**
 E3c 的 fallback 是第三份真相。替代方案：保留 fallback 只作首屏占位——被否，它会在 capability 请求失败时长期生效并与 backend 漂移，且正是本 change 要消灭的模式。
 **权衡**：删除后，capability 响应到达前 permission/effort/model picker 呈现禁用态（骨架），首屏交互延后一个 RTT。这是刻意接受的代价，换取「能力真相唯一」。若实测首屏体感不可接受，允许的补救是**服务端把 capability 内联进首屏文档**，而不是恢复前端硬编码。
+
+**决策 7：省略 run model 的行为由 model facet 所有。**
+
+`IProviderModels` 以 optional marker 表达「调用方须注入 catalog `DEFAULT`」；marker 缺失表示保留 provider runtime/CLI 的 native default。该字段是执行输入策略，不属于七个 UI capability descriptor 字段，不投影到 capability response。任何 application service 都不得按 provider id 维护第二份 omitted-model 策略。
+
+既有行为要求 Claude/Cursor 保持 implicit default，Codex/OpenCode/Pi 保持 catalog default。任务 5.4 因此只允许后三者的 model facet 声明 marker，不修改 runtime；generic dispatcher 只调用 model service 的策略解析，不加载无关 provider catalog。
 
 ## 模块边界
 
@@ -129,8 +135,10 @@ E3c 的 fallback 是第三份真相。替代方案：保留 fallback 只作首�
 | 业务规则 | 一个 app session 同时最多一个 active run | 单一终态所有权 |
 | 系统规则 | 终态只能由 coordinator 产生；runtime 只发非终态事件；**WS 与 SSE 两条传输一致** | 单一终态所有权 |
 | 系统规则 | 所有 native lookup/merge 必须携带 provider | 身份隔离 |
+| 系统规则 | coordinator 在向 transport 暴露首次 native identity 前同步持久化 mapping；transport writer 只负责投影/replay/broadcast，不重复写库 | 身份一致性 + 单一所有者 |
 | 系统规则 | 每个 provider 独立推进自身游标 | 同步失败隔离 |
 | 系统规则 | descriptor 是 7 个静态能力字段的唯一真相；3 个 `supportsX` 从 facet 存在性派生；前端不得保留任何能力猜测 | 能力表达一致 |
+| 系统规则 | 缺省 run model 策略由 provider model facet 声明；Agent dispatcher 不按 provider id 推断 | 中央点收敛 + 五 provider 零回归 |
 | 系统规则 | provider 列表不得出现在 DB schema、能力矩阵或服务层字面量中 | 中央点收敛 |
 | 技术约束 | 4 个 `.js` runtime 经 legacy adapter 接入，不一次性重写；adapter 必须带退出条件 | 迁移安全 + 仓库 TS 规范 |
 | 技术约束 | 唯一约束迁移前必须合并真实库重复行，且在单事务内完成 | 身份隔离 |

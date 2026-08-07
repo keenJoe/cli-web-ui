@@ -1,0 +1,12 @@
+{
+  "rpcOptions": {
+    "cwd": "/repo",
+    "provider": "anthropic",
+    "model": "model-a",
+    "args": [
+      "--session-id",
+      "native-pi-1"
+    ]
+  },
+  "sessionCreatedEvents": 0
+}

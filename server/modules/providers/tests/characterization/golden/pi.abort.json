@@ -1,0 +1,28 @@
+{
+  "outcome": {
+    "status": "aborted",
+    "sessionId": "native-pi-1"
+  },
+  "abortCalls": 1,
+  "events": [
+    {
+      "kind": "stream_delta",
+      "content": "partial",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    },
+    {
+      "kind": "complete",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "actualSessionId": "native-pi-1",
+      "exitCode": 1,
+      "success": false,
+      "aborted": true,
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    }
+  ]
+}

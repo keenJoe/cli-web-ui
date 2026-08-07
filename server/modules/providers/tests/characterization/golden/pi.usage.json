@@ -1,0 +1,12 @@
+{
+  "used": 232,
+  "inputTokens": 120,
+  "outputTokens": 64,
+  "cacheReadTokens": 40,
+  "cacheCreationTokens": 8,
+  "cacheTokens": 48,
+  "breakdown": {
+    "input": 120,
+    "output": 64
+  }
+}

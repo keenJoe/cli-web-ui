@@ -34,9 +34,15 @@ const writeTomlConfig = async (filePath: string, data: Record<string, unknown>):
   await writeFile(filePath, toml, 'utf8');
 };
 
+/** CodexProvider uses this facet to read and persist Codex MCP server configuration. */
 export class CodexMcpProvider extends McpProvider {
   constructor() {
-    super('codex', ['user', 'project'], ['stdio', 'http']);
+    super('codex', {
+      supportedScopes: ['user', 'project'],
+      supportedTransports: ['stdio', 'http'],
+      supportsWorkingDirectory: true,
+      supportsEnvironmentVariableReferences: true,
+    });
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

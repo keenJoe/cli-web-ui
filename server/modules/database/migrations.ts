@@ -5,6 +5,7 @@ import {
   LAST_SCANNED_AT_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
+  PROVIDER_SCAN_STATE_SQL,
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
   USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL,
@@ -416,6 +417,72 @@ const addSessionModelColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'model', 'TEXT');
 };
 
+/**
+ * Enforces that a provider-native session id identifies at most one session
+ * *within a provider*, by creating the partial unique index
+ * `idx_sessions_provider_native_id` on `(provider, provider_session_id)`.
+ *
+ * The index is qualified by `provider` on purpose: two providers may hand out
+ * the same native id, and those are two distinct sessions. The partial
+ * `WHERE provider_session_id IS NOT NULL` clause keeps app sessions that have
+ * not been mapped yet out of the constraint — SQLite would otherwise still
+ * allow them (NULLs are distinct), but the partial index also keeps it small.
+ *
+ * Pre-existing duplicates would make `CREATE UNIQUE INDEX` fail, so they are
+ * reconciled first, in the same transaction as the index creation:
+ * the most recently updated row of each `(provider, provider_session_id)` group
+ * keeps the mapping and the losers have their `provider_session_id` cleared.
+ * No row is deleted — clearing the mapping is recoverable (the synchronizer
+ * re-assigns it from disk), deleting a session is not. The real database has
+ * zero duplicates (change `refactor-provider-seams`, task 2.1), so this branch
+ * is a safety net for other installs rather than an expected path.
+ */
+const addProviderNativeSessionIdUniqueIndex = (db: Database): void => {
+  if (!tableExists(db, 'sessions')) {
+    return;
+  }
+
+  const indexExists = Boolean(
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+      .get('idx_sessions_provider_native_id')
+  );
+
+  if (indexExists) {
+    return;
+  }
+
+  console.log('Running migration: Adding unique index on (provider, provider_session_id)');
+
+  db.exec('BEGIN TRANSACTION');
+  try {
+    db.exec(`
+      WITH ranked_mappings AS (
+        SELECT
+          rowid AS source_rowid,
+          ROW_NUMBER() OVER (
+            PARTITION BY provider, provider_session_id
+            ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, rowid DESC
+          ) AS mapping_rank
+        FROM sessions
+        WHERE provider_session_id IS NOT NULL
+      )
+      UPDATE sessions
+      SET provider_session_id = NULL
+      WHERE rowid IN (SELECT source_rowid FROM ranked_mappings WHERE mapping_rank > 1)
+    `);
+    db.exec(`
+      CREATE UNIQUE INDEX idx_sessions_provider_native_id
+      ON sessions(provider, provider_session_id)
+      WHERE provider_session_id IS NOT NULL
+    `);
+    db.exec('COMMIT');
+  } catch (migrationError) {
+    db.exec('ROLLBACK');
+    throw migrationError;
+  }
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -435,7 +502,98 @@ const ensureProjectsForSessionPaths = (db: Database): void => {
   `);
 };
 
-export const runMigrations = (db: Database) => {
+/**
+ * Copies the legacy global scan cursor into `provider_scan_state`, one row per
+ * provider that already has indexed sessions.
+ *
+ * Seeding is required, not merely nice: soft-deleting a session only flips
+ * `isArchived` and leaves the provider artifact on disk, while the
+ * synchronizers' upsert resets `isArchived` to 0. An empty
+ * `provider_scan_state` would therefore make every provider run one full
+ * rescan on the first post-upgrade round, and that rescan would rediscover
+ * every archived artifact and un-delete it.
+ *
+ * The legacy value T is a safe lower bound because the old orchestrator only
+ * advanced it when *every* provider succeeded in the same round. Reaching T
+ * thus means each registered provider had scanned everything older than T, so
+ * handing T back to each provider cannot skip artifacts it never scanned.
+ *
+ * The seeded set is every *registered* provider, injected from the assembly
+ * root, unioned with the providers already present in `sessions`. Deriving it
+ * from `sessions` alone is not enough: `projects` is a separate table, so a
+ * project archived by one provider's session is revived as soon as *any*
+ * provider writes a row for the same `project_path` — including a registered
+ * provider that has zero `sessions` rows but still has artifacts on disk. The
+ * ids are injected rather than imported because `migrations.ts` sits in the
+ * database layer and importing the provider registry would invert the
+ * dependency direction into a runtime cycle. Seeding a provider that is not
+ * installed only leaves an orphan row: `getLastScannedAt` looks cursors up by
+ * provider, so a row nobody asks for is never read.
+ *
+ * Runs only while `provider_scan_state` is still empty, which is precisely the
+ * one upgrade round this seeding exists for. That keeps two later behaviors
+ * intact: re-running never rewinds a cursor the synchronizers advanced, and a
+ * provider registered by some *later* release still starts from a full scan
+ * instead of inheriting a cursor covering artifacts it never saw.
+ */
+const seedProviderScanStateFromLegacyCursor = (
+  db: Database,
+  registeredProviderIds: string[]
+) => {
+  const existingCursor = db.prepare('SELECT 1 FROM provider_scan_state LIMIT 1').get();
+  if (existingCursor) {
+    return;
+  }
+
+  const legacyCursor = db
+    .prepare('SELECT last_scanned_at FROM scan_state WHERE id = 1')
+    .get() as { last_scanned_at: string | null } | undefined;
+
+  // A fresh install has no legacy cursor. It also has no archived rows, so a
+  // full scan is both expected and harmless.
+  if (!legacyCursor?.last_scanned_at) {
+    return;
+  }
+
+  const providersWithSessions = tableExists(db, 'sessions')
+    ? (
+        db
+          .prepare(
+            `SELECT DISTINCT provider FROM sessions
+             WHERE provider IS NOT NULL AND trim(provider) <> ''`
+          )
+          .all() as { provider: string }[]
+      ).map((row) => row.provider)
+    : [];
+
+  const providersToSeed = new Set([...registeredProviderIds, ...providersWithSessions]);
+  if (providersToSeed.size === 0) {
+    return;
+  }
+
+  const insertCursor = db.prepare(
+    `INSERT INTO provider_scan_state (provider, last_scanned_at) VALUES (?, ?)
+     ON CONFLICT(provider) DO NOTHING`
+  );
+  for (const provider of providersToSeed) {
+    insertCursor.run(provider, legacyCursor.last_scanned_at);
+  }
+
+  console.log(
+    `Running migration: Seeded ${providersToSeed.size} per-provider scan cursor(s) from the legacy global cursor`
+  );
+};
+
+/**
+ * Applies all pending schema migrations.
+ *
+ * `registeredProviderIds` is required rather than defaulted: the seeding step
+ * below cannot enumerate providers itself without importing the provider
+ * registry into the database layer, and under-seeding silently revives
+ * archived rows. Making it a required argument turns "forgot to pass the
+ * providers" into a compile error at the seam where it matters.
+ */
+export const runMigrations = (db: Database, registeredProviderIds: string[]) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
     const userColumnNames = usersTableInfo.map((column) => column.name);
@@ -467,6 +625,7 @@ export const runMigrations = (db: Database) => {
     migrateLegacySessionNames(db);
     addProviderSessionIdMapping(db);
     addSessionModelColumn(db);
+    addProviderNativeSessionIdUniqueIndex(db);
     ensureProjectsForSessionPaths(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
@@ -487,6 +646,11 @@ export const runMigrations = (db: Database) => {
     }
 
     db.exec(LAST_SCANNED_AT_SQL);
+    // Per-provider scan cursors. The legacy single-row `scan_state` table is
+    // kept on purpose so the cursor change can be rolled back by pointing the
+    // repository at the old table again.
+    db.exec(PROVIDER_SCAN_STATE_SQL);
+    seedProviderScanStateFromLegacyCursor(db, registeredProviderIds);
     console.log('Database migrations completed successfully');
   } catch (error: any) {
     console.error('Error running migrations:', error.message);

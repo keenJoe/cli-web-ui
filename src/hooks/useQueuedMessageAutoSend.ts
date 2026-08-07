@@ -1,6 +1,11 @@
 import { useEffect, useRef } from 'react';
 
-import { clearQueuedMessage, readQueuedMessage } from '../components/chat/utils/chatStorage';
+import {
+  clearQueuedMessage,
+  readQueuedMessage,
+  type StoredQueuedMessage,
+} from '../components/chat/utils/chatStorage';
+import { resolveQueuedSendOptions } from '../components/chat/utils/queuedSendValidation';
 
 import type { MarkSessionProcessing, SessionActivityMap } from './useSessionProtection';
 
@@ -20,12 +25,10 @@ interface UseQueuedMessageAutoSendArgs {
 /**
  * Dispatches queued messages for sessions the user is NOT currently viewing.
  *
- * The composer persists each queued draft (text + send options snapshotted at
- * queue time) under `queued_message_<sessionId>`. When a session's run leaves
- * the processing map — its previous response completed — this hook sends that
- * session's queued message immediately instead of waiting for the user to
- * open the session again. Removing the storage key before sending is the
- * claim that keeps the composer's own flush from double-sending.
+ * The composer persists each queued draft under `queued_message_<sessionId>`.
+ * When a run finishes, this hook revalidates its snapshot against current
+ * backend capabilities, catalog, and active model before claiming and sending
+ * it. Unverifiable drafts remain stored for a later retry or composer replay.
  */
 export function useQueuedMessageAutoSend({
   processingSessions,
@@ -37,9 +40,56 @@ export function useQueuedMessageAutoSend({
   const prevProcessingRef = useRef<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
+    let cancelled = false;
     const prev = prevProcessingRef.current;
     const current = new Set(processingSessions.keys());
     prevProcessingRef.current = current;
+
+    const queuedMessageStillMatches = (
+      expected: StoredQueuedMessage,
+      actual: StoredQueuedMessage | null,
+    ) => Boolean(
+      actual
+      && actual.content === expected.content
+      && actual.provider === expected.provider
+      && JSON.stringify(actual.options ?? {}) === JSON.stringify(expected.options ?? {})
+      && JSON.stringify(actual.attachments ?? []) === JSON.stringify(expected.attachments ?? []),
+    );
+
+    const validateAndSend = async (sessionId: string, queued: StoredQueuedMessage) => {
+      if (!queued.provider) {
+        return;
+      }
+      const validatedOptions = await resolveQueuedSendOptions({
+        provider: queued.provider,
+        sessionId,
+        options: queued.options,
+      });
+      if (
+        cancelled
+        || !validatedOptions
+        || sessionId === activeSessionId
+        || processingSessions.has(sessionId)
+        || !ws
+        || ws.readyState !== WebSocket.OPEN
+      ) {
+        return;
+      }
+
+      const latestQueued = readQueuedMessage(sessionId);
+      if (!queuedMessageStillMatches(queued, latestQueued)) {
+        return;
+      }
+
+      clearQueuedMessage(sessionId);
+      sendMessage({
+        type: 'chat.send',
+        sessionId,
+        content: queued.content,
+        options: { ...validatedOptions, attachments: queued.attachments ?? [] },
+      });
+      markSessionProcessing(sessionId, { statusText: null, canInterrupt: true });
+    };
 
     for (const sessionId of prev) {
       if (current.has(sessionId) || sessionId === activeSessionId) {
@@ -57,14 +107,11 @@ export function useQueuedMessageAutoSend({
         continue;
       }
 
-      clearQueuedMessage(sessionId);
-      sendMessage({
-        type: 'chat.send',
-        sessionId,
-        content: queued.content,
-        options: { ...(queued.options ?? {}), attachments: queued.attachments ?? queued.images ?? [] },
-      });
-      markSessionProcessing(sessionId, { statusText: null, canInterrupt: true });
+      void validateAndSend(sessionId, queued);
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [processingSessions, activeSessionId, ws, sendMessage, markSessionProcessing]);
 }

@@ -1,0 +1,35 @@
+{
+  "messages": [
+    {
+      "id": "u1:0",
+      "sessionId": "app-session-pi",
+      "timestamp": "2026-01-02T03:04:00.000Z",
+      "provider": "pi",
+      "kind": "text",
+      "content": "Show me the README",
+      "role": "user"
+    },
+    {
+      "id": "a1:0",
+      "sessionId": "app-session-pi",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "provider": "pi",
+      "kind": "thinking",
+      "content": "Plan the read."
+    },
+    {
+      "id": "a1:1",
+      "sessionId": "app-session-pi",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "provider": "pi",
+      "kind": "text",
+      "content": "Here is what I found.",
+      "role": "assistant"
+    }
+  ],
+  "total": 3,
+  "hasMore": false,
+  "offset": 0,
+  "limit": null,
+  "currentModel": null
+}

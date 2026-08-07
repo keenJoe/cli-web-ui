@@ -1,9 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import type { NotificationEvent } from '@/shared/types.js';
+
 import { createSettingsService } from '../settings.service.js';
 
 type Dependencies = Parameters<typeof createSettingsService>[0];
+
+function notificationEvent(overrides: Partial<NotificationEvent> = {}): NotificationEvent {
+  return {
+    provider: 'system',
+    sessionId: null,
+    kind: 'info',
+    code: 'push.enabled',
+    meta: {},
+    severity: 'info',
+    requiresUserAction: false,
+    dedupeKey: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
 
 function dependencies(overrides: Partial<Dependencies> = {}): Dependencies {
   return {
@@ -12,7 +29,7 @@ function dependencies(overrides: Partial<Dependencies> = {}): Dependencies {
     notifications: {
       getPreferences: () => undefined,
       updatePreferences: () => ({}),
-      createEnabledEvent: () => ({}),
+      createEnabledEvent: () => notificationEvent(),
       notifyUser: () => undefined,
     },
     pushSubscriptions: { save: () => undefined, remove: () => undefined },
@@ -41,7 +58,7 @@ test('subscribeToPush persists the subscription and enables Web Push', () => {
     notifications: {
       getPreferences: () => ({ channels: { webPush: false } }),
       updatePreferences: () => { operations.push('preferences'); return {}; },
-      createEnabledEvent: () => ({ code: 'push.enabled' }),
+      createEnabledEvent: () => notificationEvent(),
       notifyUser: () => { operations.push('notify'); },
     },
   }));

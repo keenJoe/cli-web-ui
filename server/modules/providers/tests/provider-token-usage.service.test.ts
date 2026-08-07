@@ -6,6 +6,10 @@ import test from 'node:test';
 
 import Database from 'better-sqlite3';
 
+import { ClaudeTokenUsageProvider } from '@/modules/providers/list/claude/claude-token-usage.provider.js';
+import { CodexTokenUsageProvider } from '@/modules/providers/list/codex/codex-token-usage.provider.js';
+import { OpenCodeTokenUsageProvider } from '@/modules/providers/list/opencode/opencode-token-usage.provider.js';
+import { PiTokenUsageProvider } from '@/modules/providers/list/pi/pi-token-usage.provider.js';
 import { createProviderTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -47,7 +51,9 @@ test('token usage lookup requires only the app-facing session id for Claude', as
 
     const service = createProviderTokenUsageService({
       getSessionById: () => createSessionRow({ jsonl_path: sessionFilePath }),
-      getClaudeContextWindow: () => '180000',
+      requireUsageFacet: () => new ClaudeTokenUsageProvider({
+        getContextWindow: () => '180000',
+      }),
     });
 
     assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
@@ -98,6 +104,7 @@ test('Codex token usage uses the latest token_count snapshot', async () => {
         provider: 'codex',
         jsonl_path: sessionFilePath,
       }),
+      requireUsageFacet: () => new CodexTokenUsageProvider(),
     });
 
     assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
@@ -145,7 +152,9 @@ test('OpenCode token usage resolves its provider-native id from the session row'
   try {
     const service = createProviderTokenUsageService({
       getSessionById: () => createSessionRow({ provider: 'opencode' }),
-      getOpenCodeDatabasePath: () => databasePath,
+      requireUsageFacet: () => new OpenCodeTokenUsageProvider({
+        getDatabasePath: () => databasePath,
+      }),
     });
 
     assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
@@ -159,16 +168,56 @@ test('OpenCode token usage resolves its provider-native id from the session row'
   }
 });
 
-test('Cursor returns an explicit unsupported token usage result', async () => {
+test('R3: Cursor token usage rejects the missing usage facet', async () => {
   const service = createProviderTokenUsageService({
     getSessionById: () => createSessionRow({ provider: 'cursor' }),
   });
 
-  const result = await service.getSessionTokenUsage('app-session');
+  await assert.rejects(
+    () => service.getSessionTokenUsage('app-session'),
+    (error: unknown) => (
+      error instanceof AppError
+      && error.code === 'PROVIDER_CAPABILITY_UNSUPPORTED'
+      && error.statusCode === 400
+    ),
+  );
+});
 
-  assert.equal(result.unsupported, true);
-  assert.equal(result.used, 0);
-  assert.equal(result.total, 0);
+test('R3: unregistered provider usage preserves the registry error without Claude fallback', async () => {
+  const unknownProvider = 'future-provider';
+  const unsupportedProviderError = new AppError(
+    `Unsupported provider: ${unknownProvider}`,
+    { code: 'UNSUPPORTED_PROVIDER', statusCode: 400 },
+  );
+  let claudeUsageAdapterCalls = 0;
+  const service = createProviderTokenUsageService({
+    getSessionById: () => createSessionRow({ provider: unknownProvider }),
+    requireUsageFacet: (provider) => {
+      if (provider === 'claude') {
+        return {
+          async getSessionTokenUsage() {
+            claudeUsageAdapterCalls += 1;
+            throw new Error('Unknown providers must not invoke the Claude usage adapter.');
+          },
+        };
+      }
+
+      assert.equal(provider, unknownProvider);
+      throw unsupportedProviderError;
+    },
+  });
+
+  await assert.rejects(
+    () => service.getSessionTokenUsage('app-session'),
+    (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.equal(error, unsupportedProviderError);
+      assert.equal(error.code, 'UNSUPPORTED_PROVIDER');
+      assert.equal(error.statusCode, 400);
+      return true;
+    },
+  );
+  assert.equal(claudeUsageAdapterCalls, 0);
 });
 
 test('Pi token usage returns the last valid usage snapshot (T22)', async () => {
@@ -206,6 +255,7 @@ test('Pi token usage returns the last valid usage snapshot (T22)', async () => {
 
     const service = createProviderTokenUsageService({
       getSessionById: () => createSessionRow({ provider: 'pi', jsonl_path: sessionFilePath }),
+      requireUsageFacet: () => new PiTokenUsageProvider(),
     });
 
     assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
@@ -246,15 +296,7 @@ test('Pi token usage reports no usage without falling back to .claude (T23)', as
 
     const service = createProviderTokenUsageService({
       getSessionById: () => createSessionRow({ provider: 'pi', jsonl_path: sessionFilePath }),
-      getHomeDirectory: () => {
-        throw new Error('Pi must not fall back to the .claude default path');
-      },
-      readTextFile: async (filePath) => {
-        if (filePath === sessionFilePath) {
-          throw new Error('Pi must read via PiSessionStore, not readTextFile');
-        }
-        throw new Error('Pi must not fall back to the .claude default path');
-      },
+      requireUsageFacet: () => new PiTokenUsageProvider(),
     });
 
     const result = await service.getSessionTokenUsage('app-session');

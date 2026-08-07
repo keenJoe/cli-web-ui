@@ -14,29 +14,20 @@ import {
 import { providerModelsService } from '@/modules/providers/index.js';
 
 import { createAgentRouter } from './agent.routes.js';
+import { createAgentApplicationService } from './services/agent-application.service.js';
 
-type AgentExternalDependencies = Pick<
-  Parameters<typeof createAgentRouter>[0],
-  'queryClaude' | 'queryCursor' | 'queryCodex' | 'queryOpenCode' | 'queryPi'
->;
+type AgentRuntimeGateway = Parameters<typeof createAgentApplicationService>[0]['runtime'];
 
 /**
- * Assembles the production Agent router while accepting provider runners from
- * the centralized provider runtime service.
+ * Assembles the production Agent router from the same runtime service instance
+ * used by WebSocket, keeping HTTP dispatch and abort on one coordinator.
  */
-export function createAgentModule(externalDependencies: AgentExternalDependencies) {
-  return createAgentRouter({
+export function createAgentModule(runtime: AgentRuntimeGateway) {
+  const application = createAgentApplicationService({
     fileSystem: fs,
     crypto,
     homeDirectory: os.homedir,
     spawnProcess: spawn,
-    platformMode: process.env.VITE_IS_PLATFORM === 'true',
-    users: {
-      getFirstUser: () => userDb.getFirstUser(),
-    },
-    apiKeys: {
-      validateApiKey: (apiKey) => apiKeysDb.validateApiKey(apiKey),
-    },
     githubTokens: {
       getActiveGithubToken: (userId) => githubTokensDb.getActiveGithubToken(userId),
     },
@@ -44,8 +35,19 @@ export function createAgentModule(externalDependencies: AgentExternalDependencie
       createProjectPath: (projectPath, customName) =>
         projectsDb.createProjectPath(projectPath, customName),
     },
-    models: providerModelsService,
     GithubClient: Octokit,
-    ...externalDependencies,
+    models: providerModelsService,
+    runtime,
+  });
+
+  return createAgentRouter({
+    platformMode: process.env.VITE_IS_PLATFORM === 'true',
+    users: {
+      getFirstUser: () => userDb.getFirstUser(),
+    },
+    apiKeys: {
+      validateApiKey: (apiKey) => apiKeysDb.validateApiKey(apiKey),
+    },
+    application,
   });
 }

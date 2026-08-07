@@ -1,4 +1,5 @@
 import { AppError } from '@/shared/utils.js';
+import type { NotificationEvent } from '@/shared/types.js';
 
 type ApiKeyRow = Record<string, unknown> & { api_key: string };
 type NotificationPreferences = Record<string, unknown> & {
@@ -27,8 +28,8 @@ type SettingsDependencies = {
   notifications: {
     getPreferences(userId: number): NotificationPreferences | undefined;
     updatePreferences(userId: number, preferences: NotificationPreferences): unknown;
-    createEnabledEvent(): unknown;
-    notifyUser(userId: number, event: unknown): void | Promise<void>;
+    createEnabledEvent(): NotificationEvent;
+    notifyUser(userId: number, event: NotificationEvent): void | Promise<void>;
   };
   pushSubscriptions: {
     save(userId: number, endpoint: string, p256dh: string, auth: string): void;

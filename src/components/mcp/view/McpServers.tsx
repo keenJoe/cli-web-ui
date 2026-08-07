@@ -1,12 +1,17 @@
 import { Edit3, ExternalLink, Globe, Lock, Plus, Server, Terminal, Trash2, Users, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import type { McpProject, McpProvider, McpScope, ProviderMcpServer } from '../types';
+import type {
+  McpProject,
+  McpProvider,
+  McpScope,
+  ProviderMcpCapabilities,
+  ProviderMcpServer,
+} from '../types';
 import { IS_PLATFORM } from '../../../constants/config';
 import { ActionMenu, Badge, Button } from '../../../shared/view/ui';
 import {
-  MCP_GLOBAL_SUPPORTED_SCOPES,
-  MCP_GLOBAL_SUPPORTED_TRANSPORTS,
+  GLOBAL_MCP_CAPABILITIES,
   MCP_PROVIDER_BUTTON_CLASSES,
   MCP_PROVIDER_NAMES,
 } from '../constants';
@@ -18,6 +23,7 @@ import McpServerFormModal from './modals/McpServerFormModal';
 type McpServersProps = {
   selectedProvider: McpProvider;
   currentProjects: McpProject[];
+  mcpCapabilities: ProviderMcpCapabilities;
 };
 
 const getTransportIcon = (transport: string | undefined) => {
@@ -100,7 +106,7 @@ function TeamMcpFeatureCard() {
   );
 }
 
-export default function McpServers({ selectedProvider, currentProjects }: McpServersProps) {
+export default function McpServers({ selectedProvider, currentProjects, mcpCapabilities }: McpServersProps) {
   const { t } = useTranslation('settings');
   const {
     servers,
@@ -119,7 +125,7 @@ export default function McpServers({ selectedProvider, currentProjects }: McpSer
     submitForm,
     submitGlobalForm,
     deleteServer,
-  } = useMcpServers({ selectedProvider, currentProjects });
+  } = useMcpServers({ selectedProvider, currentProjects, mcpCapabilities });
 
   const providerName = MCP_PROVIDER_NAMES[selectedProvider];
   const description = t(`mcpServers.description.${selectedProvider}`, {
@@ -127,9 +133,9 @@ export default function McpServers({ selectedProvider, currentProjects }: McpSer
   });
   const globalButtonLabel = 'Add Global MCP Server';
   const providerButtonLabel = `Add ${providerName} MCP Server`;
-  const globalAddDescription = 'Add Global MCP Server writes one common stdio or HTTP server to Claude, Cursor, Codex, and OpenCode.';
+  const globalAddDescription = 'Add Global MCP Server writes one common stdio or HTTP server to all providers that support MCP.';
   const providerAddDescription = `${providerButtonLabel} only changes ${providerName}.`;
-  const globalModalDescription = 'Adds this MCP server to every provider: Claude, Cursor, Codex, and OpenCode. '
+  const globalModalDescription = 'Adds this MCP server to all providers that support MCP. '
     + 'Only stdio and HTTP transports are supported because the same config must work across all providers.';
 
   return (
@@ -295,6 +301,7 @@ export default function McpServers({ selectedProvider, currentProjects }: McpSer
         isOpen={isFormOpen}
         editingServer={editingServer}
         currentProjects={currentProjects}
+        mcpCapabilities={mcpCapabilities}
         title={editingServer ? undefined : providerButtonLabel}
         submitLabel={providerButtonLabel}
         onClose={closeForm}
@@ -310,8 +317,7 @@ export default function McpServers({ selectedProvider, currentProjects }: McpSer
         title={globalButtonLabel}
         description={globalModalDescription}
         submitLabel={globalButtonLabel}
-        supportedScopes={MCP_GLOBAL_SUPPORTED_SCOPES}
-        supportedTransports={MCP_GLOBAL_SUPPORTED_TRANSPORTS}
+        mcpCapabilities={GLOBAL_MCP_CAPABILITIES}
         onClose={closeGlobalForm}
         onSubmit={(formData) => submitGlobalForm(formData)}
       />

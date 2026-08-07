@@ -29,31 +29,35 @@ function isWorkspaceTrustPrompt(text = '') {
   return WORKSPACE_TRUST_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-async function spawnCursor(command, options = {}, ws, context) {
-  return new Promise(async (resolve, reject) => {
-    const {
-      sessionId,
-      projectPath,
-      cwd,
-      toolsSettings,
-      skipPermissions,
-      model,
-      sessionSummary,
-      images,
-      files
-    } = options;
-    // Callers pass the stable app session id; the CLI resumes with the
-    // provider-native id recorded on the session row.
-    const providerSessionId = context.resolveProviderSessionId(sessionId);
-    const resolvedModel = await context.resolveResumeModel(sessionId, model);
+/**
+ * Runs Cursor with optional process-constructor overrides used by runtime regression tests.
+ */
+async function spawnCursor(command, options = {}, ws, context, runtimeDependencies = {}) {
+  const {
+    sessionId,
+    projectPath,
+    cwd,
+    toolsSettings,
+    skipPermissions,
+    model,
+    sessionSummary,
+    images,
+    files,
+    signal
+  } = options;
+  // Resolve awaited inputs in the async function body. An async Promise
+  // executor would strand this rejection and leave the returned run pending.
+  const providerSessionId = context.resolveProviderSessionId(sessionId);
+  const resolvedModel = await context.resolveResumeModel(sessionId, model);
+  if (signal?.aborted) {
+    return;
+  }
+
+  return new Promise((resolve, reject) => {
     let capturedSessionId = providerSessionId; // Track the provider-native session id throughout the process
     let sessionCreatedSent = false; // Track if we've already sent session-created event
     let hasRetriedWithTrust = false;
     let settled = false;
-    // The unified lifecycle contract requires exactly one terminal `complete`
-    // per run. Cursor surfaces completion twice (the `result` JSON line and
-    // the process close), so the first emission wins.
-    let completeSent = false;
 
     // Use tools settings passed from frontend, or defaults
     const settings = toolsSettings || {
@@ -116,6 +120,11 @@ async function spawnCursor(command, options = {}, ws, context) {
     };
 
     const runCursorProcess = (args, runReason = 'initial') => {
+      if (signal?.aborted) {
+        settleOnce(() => resolve());
+        return;
+      }
+
       const isTrustRetry = runReason === 'trust-retry';
       let runSawWorkspaceTrustPrompt = false;
       let stdoutLineBuffer = '';
@@ -154,7 +163,7 @@ async function spawnCursor(command, options = {}, ws, context) {
         console.log('Retrying Cursor CLI with --trust after workspace trust prompt');
       }
 
-      const cursorProcess = spawnFunction('cursor-agent', args, {
+      const cursorProcess = (runtimeDependencies.spawn || spawnFunction)('cursor-agent', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env } // Inherit all environment variables
@@ -226,15 +235,12 @@ async function spawnCursor(command, options = {}, ws, context) {
               break;
 
             case 'result': {
-              // Session complete — terminal lifecycle event for this run
-              if (!completeSent) {
-                completeSent = true;
-                ws.send(createCompleteMessage({
-                  provider: 'cursor',
-                  sessionId: capturedSessionId || sessionId || null,
-                  exitCode: response.subtype === 'success' ? 0 : 1,
-                }));
-              }
+              // Legacy terminal candidates are intercepted by the typed adapter.
+              ws.send(createCompleteMessage({
+                provider: 'cursor',
+                sessionId: capturedSessionId || sessionId || null,
+                exitCode: response.subtype === 'success' ? 0 : 1,
+              }));
               break;
             }
 
@@ -283,7 +289,9 @@ async function spawnCursor(command, options = {}, ws, context) {
         // The process map is keyed by the app session id when one was given,
         // otherwise by the captured provider id (or the timestamp fallback).
         const finalSessionId = sessionId || capturedSessionId || processKey;
-        activeCursorProcesses.delete(finalSessionId);
+        if (activeCursorProcesses.get(finalSessionId) === cursorProcess) {
+          activeCursorProcesses.delete(finalSessionId);
+        }
 
         // Flush any final unterminated stdout line before completion handling.
         if (stdoutLineBuffer.trim()) {
@@ -297,17 +305,17 @@ async function spawnCursor(command, options = {}, ws, context) {
           !hasRetriedWithTrust &&
           !args.includes('--trust')
         ) {
+          if (signal?.aborted) {
+            settleOnce(() => resolve());
+            return;
+          }
           hasRetriedWithTrust = true;
           runCursorProcess([...args, '--trust'], 'trust-retry');
           return;
         }
 
-        // Terminal complete — unless the `result` line already sent it, or the
-        // run was aborted (abort-session sent the aborted complete).
-        if (!completeSent && !cursorProcess.aborted) {
-          completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'cursor', sessionId: finalSessionId, exitCode: code }));
-        }
+        // The adapter owns first-wins terminal interpretation for result/close races.
+        ws.send(createCompleteMessage({ provider: 'cursor', sessionId: finalSessionId, exitCode: code }));
 
         if (code === 0) {
           notifyTerminalState({ code });
@@ -324,7 +332,9 @@ async function spawnCursor(command, options = {}, ws, context) {
 
         // Clean up process reference on error
         const finalSessionId = sessionId || capturedSessionId || processKey;
-        activeCursorProcesses.delete(finalSessionId);
+        if (activeCursorProcesses.get(finalSessionId) === cursorProcess) {
+          activeCursorProcesses.delete(finalSessionId);
+        }
 
         // Check if Cursor CLI is installed for a clearer error message
         const installed = await context.isProviderInstalled();
@@ -333,10 +343,7 @@ async function spawnCursor(command, options = {}, ws, context) {
           : error.message;
 
         ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
-        if (!completeSent && !cursorProcess.aborted) {
-          completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'cursor', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
-        }
+        ws.send(createCompleteMessage({ provider: 'cursor', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
         notifyTerminalState({ error });
 
         settleOnce(() => reject(error));
@@ -354,9 +361,6 @@ function abortCursorSession(sessionId) {
   const process = activeCursorProcesses.get(sessionId);
   if (process) {
     console.log(`Aborting Cursor session: ${sessionId}`);
-    // The abort handler sends the terminal complete (aborted: true); flag the
-    // process so its close handler does not emit a second one.
-    process.aborted = true;
     process.kill('SIGTERM');
     activeCursorProcesses.delete(sessionId);
     return true;

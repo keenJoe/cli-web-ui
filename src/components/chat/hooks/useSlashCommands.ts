@@ -3,7 +3,7 @@ import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
 import { safeLocalStorage } from '../utils/chatStorage';
-import type { LLMProvider, Project } from '../../../types/app';
+import type { LLMProvider, Project, ProviderCapabilityStatus } from '../../../types/app';
 
 const COMMAND_QUERY_DEBOUNCE_MS = 150;
 
@@ -20,6 +20,8 @@ export interface SlashCommand {
 interface UseSlashCommandsOptions {
   selectedProject: Project | null;
   provider: LLMProvider;
+  providerCapabilityStatus: ProviderCapabilityStatus;
+  supportsSkills: boolean;
   input: string;
   setInput: Dispatch<SetStateAction<string>>;
   textareaRef: RefObject<HTMLTextAreaElement>;
@@ -43,7 +45,16 @@ type ProviderSkillsResponse = {
   };
 };
 
+type LoadedSlashCommandCatalog = {
+  projectContextKey: string;
+  skillsProvider: LLMProvider;
+  commands: SlashCommand[];
+};
+
 const getCommandHistoryKey = (projectName: string) => `command_history_${projectName}`;
+
+const getProjectContextKey = (project: Project) =>
+  `${project.projectId}\u0000${project.fullPath || project.path || ''}`;
 
 const readCommandHistory = (projectName: string): Record<string, number> => {
   const history = safeLocalStorage.getItem(getCommandHistoryKey(projectName));
@@ -138,19 +149,21 @@ const filterSlashCommands = (
 export function useSlashCommands({
   selectedProject,
   provider,
+  providerCapabilityStatus,
+  supportsSkills,
   input,
   setInput,
   textareaRef,
   onExecuteCommand,
 }: UseSlashCommandsOptions) {
-  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
-  const [filteredCommands, setFilteredCommands] = useState<SlashCommand[]>([]);
+  const [loadedCatalog, setLoadedCatalog] = useState<LoadedSlashCommandCatalog | null>(null);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(-1);
   const [slashPosition, setSlashPosition] = useState(-1);
 
   const commandQueryTimerRef = useRef<number | null>(null);
+  const catalogRequestGenerationRef = useRef(0);
 
   const clearCommandQueryTimer = useCallback(() => {
     if (commandQueryTimerRef.current !== null) {
@@ -169,14 +182,16 @@ export function useSlashCommands({
 
   useEffect(() => {
     let cancelled = false;
+    const requestGeneration = catalogRequestGenerationRef.current + 1;
+    catalogRequestGenerationRef.current = requestGeneration;
 
     const fetchCommands = async () => {
       if (!selectedProject) {
-        setSlashCommands([]);
-        setFilteredCommands([]);
+        setLoadedCatalog(null);
         return;
       }
 
+      const projectContextKey = getProjectContextKey(selectedProject);
       try {
         const workspacePath = selectedProject.fullPath || selectedProject.path || '';
         const response = await authenticatedFetch('/api/commands/list', {
@@ -194,19 +209,26 @@ export function useSlashCommands({
         }
 
         const data = await response.json();
-        const skillsParams = new URLSearchParams();
-        if (workspacePath) {
-          skillsParams.set('workspacePath', workspacePath);
-        }
+        let skillCommands: SlashCommand[] = [];
+        if (providerCapabilityStatus === 'ready' && supportsSkills) {
+          const skillsParams = new URLSearchParams();
+          if (workspacePath) {
+            skillsParams.set('workspacePath', workspacePath);
+          }
 
-        const skillsResponse = await authenticatedFetch(
-          `/api/providers/${encodeURIComponent(provider)}/skills${skillsParams.toString() ? `?${skillsParams.toString()}` : ''}`,
-        );
-        const skillsData = skillsResponse.ok
-          ? ((await skillsResponse.json()) as ProviderSkillsResponse)
-          : null;
-        const skillCommands = dedupeProviderSkills(skillsData?.data?.skills || [])
-          .map(mapSkillToSlashCommand);
+          try {
+            const skillsResponse = await authenticatedFetch(
+              `/api/providers/${encodeURIComponent(provider)}/skills${skillsParams.toString() ? `?${skillsParams.toString()}` : ''}`,
+            );
+            const skillsData = skillsResponse.ok
+              ? ((await skillsResponse.json()) as ProviderSkillsResponse)
+              : null;
+            skillCommands = dedupeProviderSkills(skillsData?.data?.skills || [])
+              .map(mapSkillToSlashCommand);
+          } catch (error) {
+            console.error('Error fetching provider skills:', error);
+          }
+        }
         const allCommands: SlashCommand[] = [
           ...((data.builtIn || []) as SlashCommand[]).map((command) => ({
             ...command,
@@ -226,13 +248,17 @@ export function useSlashCommands({
           return commandBUsage - commandAUsage;
         });
 
-        if (!cancelled) {
-          setSlashCommands(sortedCommands);
+        if (!cancelled && catalogRequestGenerationRef.current === requestGeneration) {
+          setLoadedCatalog({
+            projectContextKey,
+            skillsProvider: provider,
+            commands: sortedCommands,
+          });
         }
       } catch (error) {
         console.error('Error fetching slash commands:', error);
-        if (!cancelled) {
-          setSlashCommands([]);
+        if (!cancelled && catalogRequestGenerationRef.current === requestGeneration) {
+          setLoadedCatalog(null);
         }
       }
     };
@@ -241,17 +267,28 @@ export function useSlashCommands({
     return () => {
       cancelled = true;
     };
-  }, [selectedProject, provider]);
+  }, [selectedProject, provider, providerCapabilityStatus, supportsSkills]);
+
+  const projectContextKey = selectedProject ? getProjectContextKey(selectedProject) : null;
+  const skillsAreAvailable = providerCapabilityStatus === 'ready' && supportsSkills;
+  const slashCommands = useMemo(() => {
+    const loadedSlashCommands = loadedCatalog?.projectContextKey === projectContextKey
+      ? loadedCatalog.commands
+      : [];
+    return skillsAreAvailable && loadedCatalog?.skillsProvider === provider
+      ? loadedSlashCommands
+      : loadedSlashCommands.filter((command) => !isSkillCommand(command));
+  }, [loadedCatalog, projectContextKey, provider, skillsAreAvailable]);
+  const filteredCommands = useMemo(
+    () => filterSlashCommands(slashCommands, commandQuery),
+    [commandQuery, slashCommands],
+  );
 
   useEffect(() => {
     if (!showCommandMenu) {
       setSelectedCommandIndex(-1);
     }
   }, [showCommandMenu]);
-
-  useEffect(() => {
-    setFilteredCommands(filterSlashCommands(slashCommands, commandQuery));
-  }, [commandQuery, slashCommands]);
 
   const frequentCommands = useMemo(() => {
     if (!selectedProject || slashCommands.length === 0) {
@@ -348,6 +385,14 @@ export function useSlashCommands({
         return;
       }
 
+      if (
+        isSkillCommand(command)
+        && !slashCommands.some((availableCommand) =>
+          isSkillCommand(availableCommand) && availableCommand.name === command.name)
+      ) {
+        return;
+      }
+
       if (isHover) {
         setSelectedCommandIndex(index);
         return;
@@ -361,7 +406,7 @@ export function useSlashCommands({
 
       executeNonSkillCommand(command);
     },
-    [selectedProject, trackCommandUsage, insertCommandIntoInput, executeNonSkillCommand],
+    [selectedProject, slashCommands, trackCommandUsage, insertCommandIntoInput, executeNonSkillCommand],
   );
 
   const handleToggleCommandMenu = useCallback(() => {
@@ -370,12 +415,8 @@ export function useSlashCommands({
     setCommandQuery('');
     setSelectedCommandIndex(-1);
 
-    if (isOpening) {
-      setFilteredCommands(slashCommands);
-    }
-
     textareaRef.current?.focus();
-  }, [showCommandMenu, slashCommands, textareaRef]);
+  }, [showCommandMenu, textareaRef]);
 
   const handleCommandInputChange = useCallback(
     (newValue: string, cursorPos: number) => {

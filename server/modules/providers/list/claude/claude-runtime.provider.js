@@ -36,10 +36,6 @@ import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.j
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
-// Sessions cancelled via abort-session. The abort handler already sent the
-// terminal `complete` (aborted: true) to the client, so the run loop must not
-// emit a second one when its generator winds down.
-const abortedSessionIds = new Set();
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
@@ -242,26 +238,37 @@ function mapCliOptionsToSDK(options = {}) {
 }
 
 /**
- * Adds a session to the active sessions map
- * @param {string} sessionId - Session identifier
+ * Creates one generation-specific active session entry.
  * @param {Object} queryInstance - SDK query instance
  * @param {Object} writer - WebSocket writer for reconnect support
+ * @returns {Object} Stable entry identity for generation-safe cleanup
  */
-function addSession(sessionId, queryInstance, writer = null) {
-  activeSessions.set(sessionId, {
+function createSessionEntry(queryInstance, writer = null) {
+  return {
     instance: queryInstance,
     startTime: Date.now(),
-    status: 'active',
     writer
-  });
+  };
 }
 
 /**
- * Removes a session from the active sessions map
+ * Adds a generation-specific entry to the active sessions map.
  * @param {string} sessionId - Session identifier
+ * @param {Object} session - Stable entry created for this run generation
  */
-function removeSession(sessionId) {
-  activeSessions.delete(sessionId);
+function addSession(sessionId, session) {
+  activeSessions.set(sessionId, session);
+}
+
+/**
+ * Removes a session only when the map still points at the same run generation.
+ * @param {string} sessionId - Session identifier
+ * @param {Object} expectedSession - Entry identity owned by the cleaning run
+ */
+function removeSession(sessionId, expectedSession) {
+  if (activeSessions.get(sessionId) === expectedSession) {
+    activeSessions.delete(sessionId);
+  }
 }
 
 /**
@@ -466,10 +473,12 @@ async function loadMcpConfig(cwd) {
  * @param {Object} options - Query options
  * @param {Object} ws - WebSocket connection
  * @param {Object} context - Provider-scoped model, session, and auth lookups
+ * @param {Object} runtimeDependencies - SDK constructor overrides used by runtime regression tests
  * @returns {Promise<void>}
  */
-async function queryClaudeSDK(command, options = {}, ws, context) {
-  const { sessionId, sessionSummary } = options;
+async function queryClaudeSDK(command, options = {}, ws, context, runtimeDependencies = {}) {
+  const { sessionId, sessionSummary, signal } = options;
+  const queryFunction = runtimeDependencies.query || query;
   // Callers pass the stable app session id; the SDK only understands the
   // provider-native id recorded on the session row.
   const providerSessionId = context.resolveProviderSessionId(sessionId);
@@ -480,6 +489,27 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // Process-map key: the app session id when the caller supplied one, else
   // the provider-native id once captured (legacy/direct API callers).
   const sessionKey = () => sessionId || capturedSessionId || null;
+  let runSession = null;
+  let registeredSessionKey = null;
+
+  const registerRunSession = () => {
+    const nextSessionKey = sessionKey();
+    if (!runSession || !nextSessionKey || registeredSessionKey === nextSessionKey) {
+      return;
+    }
+
+    if (registeredSessionKey) {
+      removeSession(registeredSessionKey, runSession);
+    }
+    addSession(nextSessionKey, runSession);
+    registeredSessionKey = nextSessionKey;
+  };
+
+  const clearRunSession = () => {
+    if (runSession && registeredSessionKey) {
+      removeSession(registeredSessionKey, runSession);
+    }
+  };
 
   const emitNotification = (event) => {
     notifyUserIfEnabled({
@@ -491,11 +521,18 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
   try {
     const resolvedModel = await context.resolveResumeModel(sessionId, options.model);
+    if (signal?.aborted) {
+      return;
+    }
+
     let effortModels = CLAUDE_FALLBACK_MODELS;
     try {
       effortModels = await context.getProviderModels();
     } catch (error) {
       console.warn('[Claude SDK] Unable to load provider models for effort validation:', error);
+    }
+    if (signal?.aborted) {
+      return;
     }
 
     const sdkOptions = mapCliOptionsToSDK({
@@ -506,6 +543,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     });
 
     const mcpServers = await loadMcpConfig(options.cwd);
+    if (signal?.aborted) {
+      return;
+    }
     if (mcpServers) {
       sdkOptions.mcpServers = mcpServers;
     }
@@ -542,7 +582,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // auto-approves them and the model acts on a generated answer. Move these
     // tools to a PreToolUse hook (runs before the mode check) if we need them
     // to work in those modes.
-    sdkOptions.canUseTool = async (toolName, input, context) => {
+    sdkOptions.canUseTool = async (toolName, input, _toolContext) => {
       const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
 
       if (!requiresInteraction) {
@@ -580,7 +620,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
       const decision = await waitForToolApproval(requestId, {
         timeoutMs: requiresInteraction ? 0 : undefined,
-        signal: context?.signal,
+        signal,
         metadata: {
           // Keyed by the app session id so `chat.subscribe` can look pending
           // approvals up directly; provider id only for legacy callers.
@@ -616,38 +656,47 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
     };
 
+    let queryInstance;
+    const prompt = await createPrompt();
+    if (signal?.aborted) {
+      return;
+    }
+
     // Query constructor reads this synchronously.
     const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
     process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
-
-    let queryInstance;
     try {
-      queryInstance = query({
-        prompt: await createPrompt(),
-        options: sdkOptions
-      });
-    } catch (hookError) {
-      // Older/newer SDK versions may not accept hook shapes yet.
-      // Keep notification behavior operational via runtime events even if hook registration fails.
-      console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError?.message || hookError);
-      delete sdkOptions.hooks;
-      queryInstance = query({
-        prompt: await createPrompt(),
-        options: sdkOptions
-      });
-    }
-
-    // Restore immediately — Query constructor already captured the value
-    if (prevStreamTimeout !== undefined) {
-      process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
-    } else {
-      delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
+      try {
+        queryInstance = queryFunction({
+          prompt,
+          options: sdkOptions
+        });
+      } catch (hookError) {
+        // Older/newer SDK versions may not accept hook shapes yet.
+        // Keep notification behavior operational via runtime events even if hook registration fails.
+        console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError?.message || hookError);
+        delete sdkOptions.hooks;
+        const retryPrompt = await createPrompt();
+        if (signal?.aborted) {
+          return;
+        }
+        queryInstance = queryFunction({
+          prompt: retryPrompt,
+          options: sdkOptions
+        });
+      }
+    } finally {
+      // Restore immediately — Query constructor already captured the value.
+      if (prevStreamTimeout !== undefined) {
+        process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
+      } else {
+        delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
+      }
     }
 
     // Track the query instance for abort capability
-    if (sessionKey()) {
-      addSession(sessionKey(), queryInstance, ws);
-    }
+    runSession = createSessionEntry(queryInstance, ws);
+    registerRunSession();
 
     // Process streaming messages
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
@@ -656,7 +705,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
-        addSession(sessionKey(), queryInstance, ws);
+        registerRunSession();
 
         // Set session ID on writer
         if (ws.setSessionId && typeof ws.setSessionId === 'function') {
@@ -694,13 +743,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     }
 
     // Clean up session on completion
-    if (sessionKey()) {
-      removeSession(sessionKey());
-    }
+    clearRunSession();
 
-    // Send the terminal completion event — skipped for aborted runs, whose
-    // terminal `complete` (aborted: true) was already sent by abort-session.
-    const wasAborted = sessionKey() ? abortedSessionIds.delete(sessionKey()) : false;
+    // The adapter's AbortSignal is the cancellation truth; the coordinator
+    // already owns the aborted terminal when it is set.
+    const wasAborted = Boolean(signal?.aborted);
     if (!wasAborted) {
       ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
     }
@@ -717,14 +764,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     console.error('SDK query error:', error);
 
     // Clean up session on error
-    if (sessionKey()) {
-      removeSession(sessionKey());
-    }
+    clearRunSession();
 
-    const wasAborted = sessionKey() ? abortedSessionIds.delete(sessionKey()) : false;
+    const wasAborted = Boolean(signal?.aborted);
     if (wasAborted) {
-      // The abort already produced the terminal complete; a generator throw
-      // caused by interrupt() is expected noise, not a user-facing error.
+      // The coordinator's accepted abort already produced the terminal;
+      // a generator throw caused by interrupt() is expected noise, not a
+      // user-facing error.
       return;
     }
 
@@ -734,7 +780,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       ? 'Claude Code is not installed. Please install it first: https://docs.anthropic.com/en/docs/claude-code'
       : error.message;
 
-    // Send error to WebSocket, then the terminal complete
+    // Preserve the legacy error and completion candidates. The adapter strips
+    // the completion and returns a failed outcome for coordinator projection.
     ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
     ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
     notifyRunFailed({
@@ -763,24 +810,15 @@ async function abortClaudeSDKSession(sessionId) {
   try {
     console.log(`Aborting SDK session: ${sessionId}`);
 
-    // Mark before interrupting so the run loop knows not to emit its own
-    // terminal complete (the abort handler sends the aborted one).
-    abortedSessionIds.add(sessionId);
-
     // Call interrupt() on the query instance
     await session.instance.interrupt();
 
-    // Update session status
-    session.status = 'aborted';
-
     // Clean up session
-    removeSession(sessionId);
+    removeSession(sessionId, session);
 
     return true;
   } catch (error) {
     console.error(`Error aborting session ${sessionId}:`, error);
-    // The run keeps going; let it emit its own terminal complete.
-    abortedSessionIds.delete(sessionId);
     return false;
   }
 }
@@ -791,8 +829,7 @@ async function abortClaudeSDKSession(sessionId) {
  * @returns {boolean} True if session is active
  */
 function isClaudeSDKSessionActive(sessionId) {
-  const session = getSession(sessionId);
-  return session && session.status === 'active';
+  return activeSessions.has(sessionId);
 }
 
 /**

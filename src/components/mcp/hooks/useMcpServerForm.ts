@@ -1,8 +1,16 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { DEFAULT_MCP_FORM, MCP_SUPPORTED_SCOPES, MCP_SUPPORTED_TRANSPORTS } from '../constants';
-import type { McpFormState, McpProject, McpProvider, McpScope, McpTransport, ProviderMcpServer } from '../types';
+import { DEFAULT_MCP_FORM } from '../constants';
+import type {
+  McpFormState,
+  McpProject,
+  McpProvider,
+  McpScope,
+  McpTransport,
+  ProviderMcpCapabilities,
+  ProviderMcpServer,
+} from '../types';
 import {
   formatKeyValueLines,
   getErrorMessage,
@@ -17,8 +25,7 @@ type UseMcpServerFormArgs = {
   isOpen: boolean;
   editingServer: ProviderMcpServer | null;
   currentProjects: McpProject[];
-  supportedScopes?: McpScope[];
-  supportedTransports?: McpTransport[];
+  mcpCapabilities: ProviderMcpCapabilities;
   unsupportedTransportMessage?: (transport: McpTransport) => string;
   onSubmit: (formData: McpFormState, editingServer: ProviderMcpServer | null) => Promise<void>;
 };
@@ -32,13 +39,12 @@ type MultilineFieldText = {
 };
 
 const cloneDefaultForm = (
-  provider: McpProvider,
-  supportedScopes = MCP_SUPPORTED_SCOPES[provider],
-  supportedTransports = MCP_SUPPORTED_TRANSPORTS[provider],
+  supportedScopes: McpScope[],
+  supportedTransports: McpTransport[],
 ): McpFormState => ({
   ...DEFAULT_MCP_FORM,
-  scope: supportedScopes[0],
-  transport: supportedTransports[0],
+  scope: supportedScopes[0] ?? DEFAULT_MCP_FORM.scope,
+  transport: supportedTransports[0] ?? DEFAULT_MCP_FORM.transport,
   args: [],
   env: {},
   headers: {},
@@ -47,12 +53,11 @@ const cloneDefaultForm = (
 });
 
 const createFormStateFromServer = (
-  provider: McpProvider,
   server: ProviderMcpServer,
-  supportedScopes?: McpScope[],
-  supportedTransports?: McpTransport[],
+  supportedScopes: McpScope[],
+  supportedTransports: McpTransport[],
 ): McpFormState => ({
-  ...cloneDefaultForm(provider, supportedScopes, supportedTransports),
+  ...cloneDefaultForm(supportedScopes, supportedTransports),
   name: server.name,
   scope: server.scope,
   workspacePath: server.workspacePath || '',
@@ -77,11 +82,11 @@ const createMultilineTextFromForm = (formData: McpFormState): MultilineFieldText
 });
 
 const normalizeScope = (supportedScopes: McpScope[], value: McpScope): McpScope => (
-  supportedScopes.includes(value) ? value : supportedScopes[0]
+  supportedScopes.includes(value) ? value : supportedScopes[0] ?? value
 );
 
 const normalizeTransport = (supportedTransports: McpTransport[], value: McpTransport): McpTransport => (
-  supportedTransports.includes(value) ? value : supportedTransports[0]
+  supportedTransports.includes(value) ? value : supportedTransports[0] ?? value
 );
 
 export function useMcpServerForm({
@@ -89,17 +94,17 @@ export function useMcpServerForm({
   isOpen,
   editingServer,
   currentProjects,
-  supportedScopes = MCP_SUPPORTED_SCOPES[provider],
-  supportedTransports = MCP_SUPPORTED_TRANSPORTS[provider],
+  mcpCapabilities,
   unsupportedTransportMessage,
   onSubmit,
 }: UseMcpServerFormArgs) {
+  const { supportedScopes, supportedTransports } = mcpCapabilities;
   const { t } = useTranslation('settings');
   const [formData, setFormData] = useState<McpFormState>(() => (
-    cloneDefaultForm(provider, supportedScopes, supportedTransports)
+    cloneDefaultForm(supportedScopes, supportedTransports)
   ));
   const [multilineText, setMultilineText] = useState<MultilineFieldText>(() => (
-    createMultilineTextFromForm(cloneDefaultForm(provider, supportedScopes, supportedTransports))
+    createMultilineTextFromForm(cloneDefaultForm(supportedScopes, supportedTransports))
   ));
   const [jsonValidationError, setJsonValidationError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -113,13 +118,13 @@ export function useMcpServerForm({
 
     setJsonValidationError('');
     if (editingServer) {
-      const nextFormData = createFormStateFromServer(provider, editingServer, supportedScopes, supportedTransports);
+      const nextFormData = createFormStateFromServer(editingServer, supportedScopes, supportedTransports);
       setFormData(nextFormData);
       setMultilineText(createMultilineTextFromForm(nextFormData));
       return;
     }
 
-    const nextFormData = cloneDefaultForm(provider, supportedScopes, supportedTransports);
+    const nextFormData = cloneDefaultForm(supportedScopes, supportedTransports);
     setFormData(nextFormData);
     setMultilineText(createMultilineTextFromForm(nextFormData));
   }, [editingServer, isOpen, provider, supportedScopes, supportedTransports]);
@@ -196,6 +201,10 @@ export function useMcpServerForm({
   });
 
   const canSubmit = useMemo(() => {
+    if (!supportedScopes.includes(formData.scope) || !supportedTransports.includes(formData.transport)) {
+      return false;
+    }
+
     if (!formData.name.trim()) {
       return false;
     }
@@ -213,7 +222,7 @@ export function useMcpServerForm({
     }
 
     return Boolean(formData.url.trim());
-  }, [formData, jsonValidationError]);
+  }, [formData, jsonValidationError, supportedScopes, supportedTransports]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

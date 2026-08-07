@@ -347,10 +347,11 @@ export function createNormalizedMessage(fields: NormalizedMessageInput): Normali
 /**
  * Build the unified terminal `complete` lifecycle message.
  *
- * Contract: every provider run ends with exactly one `complete` (the
- * abort-session handler emits it on behalf of cancelled runs, so aborted runs
- * must NOT emit their own). The frontend treats `complete` as the only
- * terminal signal and never needs provider-specific handling:
+ * Contract: `ProviderRunCoordinator` creates exactly one transport-visible
+ * `complete` for every provider run, including accepted aborts. Runtimes emit
+ * only non-terminal events and return an outcome. The frontend treats
+ * `complete` as the only terminal signal and never needs provider-specific
+ * handling:
  *
  * - `sessionId`     — the id the client knows this run by ('' if never discovered)
  * - `actualSessionId` — canonical id after the run; equals `sessionId` unless
@@ -494,6 +495,23 @@ export const readStringRecord = (value: unknown): Record<string, string> | undef
 
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 };
+
+// ---------------------------
+//----------------- PROVIDER TOKEN-USAGE NUMBER UTILITIES ------------
+/**
+ * Coerces one provider-native token-usage field to a finite number.
+ *
+ * The Claude, Codex, and OpenCode usage facets use this helper when reading
+ * loosely typed JSONL or SQLite values. It deliberately preserves JavaScript
+ * `Number` coercion for finite inputs, including numeric strings, while mapping
+ * missing, malformed, `NaN`, and infinite values to `0`. This is a narrow
+ * parsing fallback, not domain validation: finite negative or fractional values
+ * remain unchanged so adapters do not silently rewrite provider-owned data.
+ */
+export function readFiniteUsageNumber(value: unknown): number {
+  const parsedValue = Number(value);
+  return Number.isFinite(parsedValue) ? parsedValue : 0;
+}
 
 // ---------------------------
 //----------------- PROVIDER MODEL LOOKUP UTILITIES ------------

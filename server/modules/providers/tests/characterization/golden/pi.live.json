@@ -1,0 +1,88 @@
+{
+  "outcome": {
+    "status": "settled",
+    "sessionId": "native-pi-1"
+  },
+  "events": [
+    {
+      "kind": "session_created",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "newSessionId": "native-pi-1",
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    },
+    {
+      "id": "<generated-id>",
+      "kind": "thinking",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "timestamp": "<generated-timestamp>",
+      "content": "Plan the read.",
+      "isStreaming": true
+    },
+    {
+      "id": "<generated-id>",
+      "kind": "thinking",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "timestamp": "<generated-timestamp>",
+      "content": "Plan the read.",
+      "isStreaming": false,
+      "duration": 1
+    },
+    {
+      "kind": "tool_use",
+      "toolId": "call_1",
+      "toolName": "read",
+      "toolInput": {
+        "path": "README.md"
+      },
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    },
+    {
+      "kind": "tool_result",
+      "toolId": "call_1",
+      "toolName": "read",
+      "content": "# Title",
+      "isError": false,
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    },
+    {
+      "kind": "stream_delta",
+      "content": "Here is what I found.",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    },
+    {
+      "kind": "status",
+      "status": "turn_end",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    },
+    {
+      "kind": "complete",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "actualSessionId": "native-pi-1",
+      "exitCode": 0,
+      "success": true,
+      "aborted": false,
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    }
+  ],
+  "boundSessionIds": [
+    "native-pi-1"
+  ]
+}

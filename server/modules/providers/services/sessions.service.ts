@@ -3,8 +3,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
-import { chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import { sessionRunStateReader } from '@/modules/providers/services/session-run-state-reader.service.js';
 import type {
   FetchHistoryOptions,
   FetchHistoryResult,
@@ -116,7 +116,7 @@ export const sessionsService = {
     startedAt: number;
     lastSeq: number;
   }> {
-    return chatRunRegistry.listRunningRuns();
+    return sessionRunStateReader.listRunningSessions();
   },
 
   /**
@@ -124,15 +124,26 @@ export const sessionsService = {
    *
    * Callers hand provider runtimes the stable app session id; the provider
    * CLIs/SDKs only understand their own native id, which lives on the session
-   * row. Ids without a row are assumed to be provider-native already (direct
-   * API callers that reference sessions the watcher has not indexed yet).
+   * row. Existing app rows must belong to the selected provider. Ids without a
+   * row are assumed to be provider-native already (direct API callers that
+   * reference sessions the watcher has not indexed yet).
    */
-  resolveProviderSessionId(sessionId: string | null | undefined): string | null {
+  resolveProviderSessionId(
+    sessionId: string | null | undefined,
+    provider: LLMProvider,
+  ): string | null {
     if (!sessionId) {
       return null;
     }
 
     const session = sessionsDb.getSessionById(sessionId);
+    if (session && session.provider !== provider) {
+      // Conceal cross-provider session ownership just like an unknown session.
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
     return session ? session.provider_session_id : sessionId;
   },
 
@@ -173,6 +184,67 @@ export const sessionsService = {
       provider,
       projectPath: normalizedProjectPath,
     };
+  },
+
+  /**
+   * Ensures a caller-supplied app session id has a persistence row before a run.
+   *
+   * ProviderRunCoordinator uses this for transports such as Agent HTTP that
+   * allocate their own app id instead of calling `createAppSession` first. The
+   * operation is idempotent for WebSocket, whose session row already exists.
+   */
+  ensureAppSession(
+    sessionId: string,
+    provider: LLMProvider,
+    projectPath: string,
+  ): void {
+    const existing = sessionsDb.getSessionById(sessionId);
+    if (existing) {
+      if (existing.provider !== provider) {
+        throw new AppError(`Session "${sessionId}" was not found.`, {
+          code: 'SESSION_NOT_FOUND',
+          statusCode: 404,
+        });
+      }
+      return;
+    }
+
+    const normalizedProjectPath = projectPath.trim();
+    if (!normalizedProjectPath) {
+      throw new AppError('projectPath is required.', {
+        code: 'PROJECT_PATH_REQUIRED',
+        statusCode: 400,
+      });
+    }
+    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath);
+  },
+
+  /**
+   * Persists the first provider-native identity accepted by the run coordinator.
+   *
+   * The app session must already exist so a transport can never publish an
+   * identity that future resume requests cannot resolve from persistence.
+   */
+  assignProviderSessionId(
+    sessionId: string,
+    providerSessionId: string,
+    provider: LLMProvider,
+  ): void {
+    const existing = sessionsDb.getSessionById(sessionId);
+    if (!existing) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    if (existing.provider !== provider) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    sessionsDb.assignProviderSessionId(sessionId, providerSessionId, provider);
   },
 
   /**
@@ -227,17 +299,17 @@ export const sessionsService = {
   },
 
   /**
-   * Resolves one session (by app id, falling back to the provider-native id)
-   * to its metadata plus the owning project.
+   * Resolves one session within a provider (by app id, falling back to the
+   * provider-native id) to its metadata plus the owning project.
    *
    * This backs deep links like `/session/:sessionId`: the frontend's paginated
    * project payloads only carry each project's first session page, so a
    * session opened directly by URL may not be present client-side at all —
    * this lookup is the authoritative way to learn which project owns it.
    */
-  getSessionDetailsById(sessionId: string): SessionDetails {
-    const session =
-      sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+  getSessionDetailsById(sessionId: string, provider: LLMProvider): SessionDetails {
+    const session = sessionsDb.getSessionById(sessionId)
+      ?? sessionsDb.getSessionByProviderSessionId(sessionId, provider);
     if (!session) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
         code: 'SESSION_NOT_FOUND',

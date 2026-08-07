@@ -28,11 +28,20 @@ type SynchronizeRowsResult = {
   firstSessionId: string | null;
 };
 
+const PENDING_APP_SESSION_MAX_AGE_MS = 15 * 60 * 1000;
+
 /**
  * Session indexer for OpenCode's SQLite-backed session store.
  */
 export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly provider = 'opencode' as const;
+
+  /**
+   * Resolves the directory containing OpenCode's configured session database.
+   */
+  getWatchRoots(): string[] {
+    return [path.dirname(getOpenCodeDatabasePath())];
+  }
 
   /**
    * Scans OpenCode's shared opencode.db and upserts active sessions into DB.
@@ -113,20 +122,25 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
     }
 
     const fallbackTitle = 'Untitled OpenCode Session';
-    const pendingAppSession = sessionsDb.getSessionByProviderSessionId(sessionId)
+    const pendingSessionCreatedAfter = new Date(Date.now() - PENDING_APP_SESSION_MAX_AGE_MS);
+    const pendingAppSession = sessionsDb.getSessionByProviderSessionId(sessionId, this.provider)
       ?? sessionsDb.getSessionById(sessionId)
-      ?? sessionsDb.findLatestPendingAppSession(this.provider, projectPath);
+      ?? sessionsDb.findLatestPendingAppSession(
+        this.provider,
+        projectPath,
+        pendingSessionCreatedAfter,
+      );
     if (pendingAppSession && !pendingAppSession.provider_session_id) {
       // Slow networks can let the sqlite watcher index opencode.db before the
       // runtime reports its provider id back through the websocket mapping.
       // Bind that id to the fresh app row first so the watcher does not create
       // a temporary provider-id sidebar entry for the same session.
-      sessionsDb.assignProviderSessionId(pendingAppSession.session_id, sessionId);
+      sessionsDb.assignProviderSessionId(pendingAppSession.session_id, sessionId, this.provider);
     }
 
     // App-created sessions are keyed by an app id, so disk-discovered provider
     // ids must be resolved through the provider-id mapping first.
-    const existingSession = sessionsDb.getSessionByProviderSessionId(sessionId)
+    const existingSession = sessionsDb.getSessionByProviderSessionId(sessionId, this.provider)
       ?? sessionsDb.getSessionById(sessionId);
     const existingName = existingSession?.custom_name;
 

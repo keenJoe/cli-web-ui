@@ -61,6 +61,8 @@ const mapModel = (row: PiModelRow): ProviderModelOption => ({
 });
 
 export class PiModelsProvider implements IProviderModels {
+  readonly usesCatalogDefaultWhenModelOmitted = true as const;
+
   private readonly rpc: PiModelsRpc;
 
   constructor(rpc: PiModelsRpc) {

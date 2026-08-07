@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import type { AgentCategory, AgentProvider } from '../../../types/types';
+import { useProviderCapabilities } from '../../../../../hooks/useProviderCapabilities';
+import { PROVIDER_IDS } from '../../../../llm-logo-provider/providerBranding';
+import type { AgentProvider, AgentCategory } from '../../../types/types';
 
+import { getVisibleAgentCategories } from './agentCategoryVisibility';
 import type { AgentContext, AgentsSettingsTabProps } from './types';
 import AgentCategoryContentSection from './sections/AgentCategoryContentSection';
 import AgentCategoryTabsSection from './sections/AgentCategoryTabsSection';
@@ -20,49 +23,39 @@ export default function AgentsSettingsTab({
 }: AgentsSettingsTabProps) {
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
-  const visibleCategories = useMemo<AgentCategory[]>(() => {
-    // Pi does not support MCP, so the MCP tab is hidden for it.
-    if (selectedAgent === 'pi') {
-      return ['account', 'permissions', 'skills'];
-    }
-    return selectedAgent === 'opencode'
-      ? ['account', 'permissions', 'mcp']
-      : ['account', 'permissions', 'mcp', 'skills'];
-  }, [selectedAgent]);
+  const { status: capabilitiesStatus, byProvider: providerCapabilities } = useProviderCapabilities();
+  const selectedCapabilities = capabilitiesStatus === 'ready'
+    ? providerCapabilities[selectedAgent] ?? null
+    : null;
+  const selectedMcpCapabilities = selectedCapabilities?.supportsMcp === true
+    ? selectedCapabilities.mcp ?? null
+    : null;
+  const visibleCategories = useMemo(
+    () => getVisibleAgentCategories(selectedCapabilities
+      ? {
+          ...selectedCapabilities,
+          supportsMcp: selectedMcpCapabilities !== null,
+        }
+      : null),
+    [selectedCapabilities, selectedMcpCapabilities],
+  );
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode', 'pi'];
+    return PROVIDER_IDS;
   }, []);
 
-  const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => ({
-    claude: {
-      authStatus: providerAuthStatus.claude,
-      onLogin: () => onProviderLogin('claude'),
-    },
-    cursor: {
-      authStatus: providerAuthStatus.cursor,
-      onLogin: () => onProviderLogin('cursor'),
-    },
-    codex: {
-      authStatus: providerAuthStatus.codex,
-      onLogin: () => onProviderLogin('codex'),
-    },
-    opencode: {
-      authStatus: providerAuthStatus.opencode,
-      onLogin: () => onProviderLogin('opencode'),
-    },
-    pi: {
-      authStatus: providerAuthStatus.pi,
-      onLogin: () => onProviderLogin('pi'),
-    },
-  }), [
-    onProviderLogin,
-    providerAuthStatus.claude,
-    providerAuthStatus.codex,
-    providerAuthStatus.cursor,
-    providerAuthStatus.opencode,
-    providerAuthStatus.pi,
-  ]);
+  const agentContextById = useMemo(
+    () => Object.fromEntries(
+      PROVIDER_IDS.map((providerId) => [
+        providerId,
+        {
+          authStatus: providerAuthStatus[providerId],
+          onLogin: () => onProviderLogin(providerId),
+        },
+      ]),
+    ) as Record<AgentProvider, AgentContext>,
+    [onProviderLogin, providerAuthStatus],
+  );
 
   useEffect(() => {
     if (!visibleCategories.includes(selectedCategory)) {
@@ -98,6 +91,11 @@ export default function AgentsSettingsTab({
           codexPermissionMode={codexPermissionMode}
           onCodexPermissionModeChange={onCodexPermissionModeChange}
           projects={projects}
+          permissionModes={selectedCapabilities?.permissionModes ?? []}
+          defaultPermissionMode={selectedCapabilities?.defaultPermissionMode ?? null}
+          supportsMcp={selectedMcpCapabilities !== null}
+          mcpCapabilities={selectedMcpCapabilities}
+          supportsSkills={selectedCapabilities?.supportsSkills === true}
         />
       </div>
     </div>
