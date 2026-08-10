@@ -145,3 +145,6 @@ electron/*.tar.gz
 # Task files
 # tasks.json
 # tasks/ 
+
+.playwright-mcp/
+paseo.json

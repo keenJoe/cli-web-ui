@@ -216,6 +216,13 @@ function buildShellCommand(
     return initialCommand || 'opencode';
   }
 
+  if (provider === 'pi') {
+    if (resumeSessionId) {
+      return `pi --session "${resumeSessionId}"`;
+    }
+    return initialCommand || 'pi';
+  }
+
   const command = initialCommand || 'claude';
   if (resumeSessionId) {
     if (os.platform() === 'win32') {
@@ -280,6 +287,52 @@ function prioritizeUserNpmGlobalBin(env: NodeJS.ProcessEnv): { key: string; valu
   ].join(delimiter);
 
   return { key: pathKey, value };
+}
+
+/**
+ * Appends well-known user-level bin directories to PATH when they exist but are
+ * missing from it. npm's lifecycle rebuilds PATH and drops shell-rc entries such
+ * as ~/.local/bin, so CLIs installed there (e.g. claude) become unreachable in
+ * the spawned pty. Directories are appended (never prepended) so an already
+ * active toolchain earlier in PATH (fnm/homebrew node) keeps priority.
+ */
+function appendUserBinDirs(currentPath: string | undefined): string {
+  const delimiter = path.delimiter;
+  const home = os.homedir();
+  const candidates =
+    os.platform() === 'win32'
+      ? [path.join(home, 'AppData', 'Roaming', 'npm')]
+      : [
+          path.join(home, '.local', 'bin'),
+          path.join(home, 'bin'),
+          '/opt/homebrew/bin',
+          '/usr/local/bin',
+        ];
+
+  const existingEntries = (currentPath ?? '').split(delimiter).filter(Boolean);
+  const existingSet = new Set(
+    os.platform() === 'win32'
+      ? existingEntries.map((entry) => entry.toLowerCase())
+      : existingEntries
+  );
+
+  const additions = candidates.filter((candidate) => {
+    const normalized = os.platform() === 'win32' ? candidate.toLowerCase() : candidate;
+    if (existingSet.has(normalized)) {
+      return false;
+    }
+    try {
+      return fs.statSync(candidate).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+
+  if (additions.length === 0) {
+    return currentPath ?? '';
+  }
+
+  return [...existingEntries, ...additions].join(delimiter);
 }
 
 /**
@@ -398,6 +451,7 @@ export function handleShellConnection(
         const termCols = readNumber(data.cols, 80);
         const termRows = readNumber(data.rows, 24);
         const prioritizedPath = prioritizeUserNpmGlobalBin(process.env);
+        prioritizedPath.value = appendUserBinDirs(prioritizedPath.value);
 
         shellProcess = (dependencies.spawnPty ?? pty.spawn)(shell, shellArgs, {
           name: 'xterm-256color',
@@ -536,6 +590,8 @@ export function handleShellConnection(
                 ? 'Codex'
                 : provider === 'opencode'
                     ? 'OpenCode'
+                  : provider === 'pi'
+                    ? 'Pi'
                   : 'Claude';
           welcomeMsg = hasSession && resumeSessionId
             ? `\x1b[36mResuming ${providerName} session ${resumeSessionId} in: ${projectPath}\x1b[0m\r\n`

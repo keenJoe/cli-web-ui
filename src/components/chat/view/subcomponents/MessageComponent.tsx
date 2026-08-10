@@ -165,6 +165,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                           ? t('messageTypes.codex')
                           : provider === 'opencode'
                               ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
+                              : provider === 'pi'
+                                  ? t('messageTypes.pi', { defaultValue: 'Pi' })
                               : t('messageTypes.claude'))}
               </div>
             </div>
@@ -309,7 +311,10 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               </div>
             ) : message.isThinking ? (
               /* Thinking messages — Reasoning component (ai-elements pattern) */
-              <Reasoning defaultOpen={false}>
+              <Reasoning
+                isStreaming={Boolean(message.isStreaming)}
+                duration={message.duration}
+              >
                 <ReasoningTrigger />
                 <ReasoningContent>
                   <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
@@ -400,4 +405,3 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 });
 
 export default MessageComponent;
-

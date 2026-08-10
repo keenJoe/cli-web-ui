@@ -1,4 +1,5 @@
 import { X } from 'lucide-react';
+
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import { DEFAULT_PROJECT_FOR_EMPTY_SHELL, IS_PLATFORM } from '../../../constants/config';
 import type { LLMProvider } from '../../../types/app';
@@ -41,6 +42,10 @@ const getProviderCommand = ({
     return 'opencode auth login';
   }
 
+  if (provider === 'pi') {
+    return 'pi';
+  }
+
   return 'claude --dangerously-skip-permissions /login';
 };
 
@@ -49,6 +54,7 @@ const getProviderTitle = (provider: LLMProvider) => {
   if (provider === 'cursor') return 'Cursor CLI Login';
   if (provider === 'codex') return 'Codex CLI Login';
   if (provider === 'opencode') return 'OpenCode CLI Login';
+  if (provider === 'pi') return 'Pi CLI';
   return 'Claude CLI Login';
 };
 
