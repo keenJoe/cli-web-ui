@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
-import type { ProviderModelOption } from '../../../../types/app';
+import type { ProviderCapabilityStatus, ProviderModelOption } from '../../../../types/app';
 import { DEFAULT_EFFORT_VALUE } from '../../constants/providerEffort';
 import { useComposerMenuAnchor } from '../../hooks/useComposerMenuAnchor';
 
@@ -17,18 +17,22 @@ import {
 type EffortOption = NonNullable<ProviderModelOption['effort']>['values'][number];
 
 interface ComposerModelMenuProps {
+  capabilityStatus: ProviderCapabilityStatus;
   effort: string;
   /** Effort values the active provider/model actually accepts; empty hides the section. */
   effortOptions: EffortOption[];
   onSelectEffort: (effort: string) => void;
-  model: string;
+  model: string | null;
   /** Model catalog for the active provider; empty hides the section. */
   modelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
+  /** Definitively unauthenticated provider: render nothing at all. */
+  hidden?: boolean;
 }
 
 export default function ComposerModelMenu({
+  capabilityStatus,
   effort,
   effortOptions,
   onSelectEffort,
@@ -36,6 +40,7 @@ export default function ComposerModelMenu({
   modelOptions,
   onSelectModel,
   modelsLoading,
+  hidden,
 }: ComposerModelMenuProps) {
   const { t } = useTranslation('chat');
   const [isOpen, setIsOpen] = useState(false);
@@ -63,6 +68,29 @@ export default function ComposerModelMenu({
     [model, modelOptions],
   );
   const modelLabel = selectedModelOption?.label || model;
+
+  const catalogUnavailable = modelOptions.length === 0 && !modelsLoading;
+  if (hidden) {
+    return null;
+  }
+  if (capabilityStatus !== 'ready' || !model || catalogUnavailable) {
+    const unavailableLabel = t('composer.modelMenuUnavailable', {
+      defaultValue: 'Model and reasoning effort unavailable',
+    });
+
+    return (
+      <button
+        type="button"
+        disabled
+        aria-busy="true"
+        aria-label={unavailableLabel}
+        title={unavailableLabel}
+        className="flex h-8 w-20 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40 sm:w-32"
+      >
+        <span aria-hidden className="h-3 w-12 animate-pulse rounded-sm bg-muted-foreground/25 sm:w-20" />
+      </button>
+    );
+  }
 
   const hasEffortSection = resolvedEffortOptions.length > 0;
   const hasModelSection = modelOptions.length > 0 || modelsLoading;

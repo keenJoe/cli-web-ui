@@ -28,7 +28,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = databasePath;
-  await initializeDatabase();
+  await initializeDatabase([]);
 
   try {
     await runTest();
@@ -69,9 +69,10 @@ test('live events are remapped to the app session id and sequenced', async () =>
   });
 });
 
-test('session_created is swallowed and persisted as the provider-id mapping', async () => {
+test('session_created is swallowed and broadcasts the coordinator-persisted mapping', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('app-run-2', 'cursor', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-run-2', 'cursor-native-7', 'cursor');
     const connection = new FakeConnection();
     connectedClients.add(connection as never);
     const run = chatRunRegistry.startRun({
@@ -95,9 +96,46 @@ test('session_created is swallowed and persisted as the provider-id mapping', as
     assert.equal(sessionUpserts.length, 1);
     assert.equal(sessionUpserts[0]?.sessionId, 'app-run-2');
     assert.equal(sessionUpserts[0]?.providerSessionId, 'cursor-native-7');
-    // ...but the canonical mapping is recorded and persisted in the database.
+    // ...but the canonical mapping is recorded and read from the database.
     assert.equal(run.providerSessionId, 'cursor-native-7');
     assert.equal(sessionsDb.getSessionById('app-run-2')?.provider_session_id, 'cursor-native-7');
+  });
+});
+
+test('session_created observes coordinator persistence without writing the mapping again', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-single-owner', 'cursor', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-run-single-owner', 'cursor-native-owner', 'cursor');
+    const originalAssign = sessionsDb.assignProviderSessionId;
+    let registryAssignCalls = 0;
+    sessionsDb.assignProviderSessionId = (...args) => {
+      registryAssignCalls += 1;
+      originalAssign(...args);
+    };
+
+    try {
+      const connection = new FakeConnection();
+      const run = chatRunRegistry.startRun({
+        appSessionId: 'app-run-single-owner',
+        provider: 'cursor',
+        providerSessionId: null,
+        connection,
+        userId: null,
+      });
+      assert.ok(run);
+
+      run.writer.send({
+        kind: 'session_created',
+        provider: 'cursor',
+        sessionId: 'cursor-native-owner',
+        newSessionId: 'cursor-native-owner',
+      });
+
+      assert.equal(run.providerSessionId, 'cursor-native-owner');
+      assert.equal(registryAssignCalls, 0);
+    } finally {
+      sessionsDb.assignProviderSessionId = originalAssign;
+    }
   });
 });
 

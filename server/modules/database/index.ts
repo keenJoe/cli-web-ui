@@ -1,5 +1,8 @@
 export { initializeDatabase } from '@/modules/database/init-db.js';
 export { closeConnection, getConnection, getDatabasePath } from '@/modules/database/connection.js';
+// runMigrations: exposed so callers outside the database module can re-run the
+// upgrade path (regression tests that simulate an upgrade against a temp DB).
+export { runMigrations } from '@/modules/database/migrations.js';
 export { apiKeysDb } from '@/modules/database/repositories/api-keys.js';
 export { appConfigDb } from '@/modules/database/repositories/app-config.js';
 export { credentialsDb } from '@/modules/database/repositories/credentials.js';

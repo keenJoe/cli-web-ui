@@ -3,6 +3,15 @@ import test from 'node:test';
 
 import type { RpcClientOptions } from '@earendil-works/pi-coding-agent';
 
+import type {
+  IProviderEventSink,
+  IProviderRuntime,
+} from '@/shared/interfaces.js';
+import type {
+  ProviderRunRequest,
+  ProviderRuntimeContext,
+} from '@/shared/types.js';
+
 import {
   createPiRuntime,
   mapPiEvent,
@@ -21,11 +30,12 @@ class FakeRpc implements PiRuntimeRpc {
   abortCalls = 0;
   closeCalls: number[] = [];
   promptCalls: string[] = [];
-  state: { sessionId: string; sessionFile?: string; isStreaming: boolean } = {
+  state: { sessionId?: string; sessionFile?: string; isStreaming: boolean } = {
     sessionId: 'native-1',
     isStreaming: false,
   };
   startError: Error | null = null;
+  startGate: Promise<void> | null = null;
 
   private eventListeners = new Set<(e: unknown) => void>();
   private closeListeners = new Set<() => void>();
@@ -33,6 +43,7 @@ class FakeRpc implements PiRuntimeRpc {
   async start(): Promise<void> {
     this.startCalls += 1;
     if (this.startError) throw this.startError;
+    if (this.startGate) await this.startGate;
   }
 
   onEvent(listener: (e: unknown) => void): () => void {
@@ -92,18 +103,23 @@ interface CapturedMessage {
 function makeWriter() {
   const sent: CapturedMessage[] = [];
   const sessionIds: string[] = [];
-  const writer = {
-    send(data: unknown) {
-      sent.push(data as CapturedMessage);
+  const bindings: Array<{ providerSessionId: string; artifactPath?: string | null }> = [];
+  const operations: string[] = [];
+  const writer: IProviderEventSink = {
+    emit(event) {
+      sent.push(event as CapturedMessage);
+      operations.push(`event:${event.kind}`);
     },
-    setSessionId(id: string) {
-      sessionIds.push(id);
+    bindProviderSession(binding) {
+      bindings.push(binding);
+      sessionIds.push(binding.providerSessionId);
+      operations.push('bind');
     },
   };
-  return { writer, sent, sessionIds };
+  return { writer, sent, sessionIds, bindings, operations };
 }
 
-function makeContext(mapped: string | null = null) {
+function makeContext(mapped: string | null = null): ProviderRuntimeContext {
   return {
     resolveProviderSessionId: () => mapped,
     resolveResumeModel: async () => undefined,
@@ -111,6 +127,51 @@ function makeContext(mapped: string | null = null) {
     normalizeMessage: () => [],
     isProviderInstalled: async () => true,
   };
+}
+
+type TestRunOptions = Partial<ProviderRunRequest> & {
+  sessionId?: string;
+  signal?: AbortSignal;
+};
+
+function runPi(
+  runtime: IProviderRuntime,
+  command: string,
+  options: TestRunOptions,
+  sink: IProviderEventSink,
+  context: ProviderRuntimeContext,
+) {
+  const appSessionId = options.sessionId ?? options.appSessionId ?? 'app-1';
+  const providerSessionId = options.providerSessionId !== undefined
+    ? options.providerSessionId
+    : context.resolveProviderSessionId(appSessionId);
+  const request: ProviderRunRequest = {
+    runId: options.runId ?? 'run-1',
+    provider: 'pi',
+    appSessionId,
+    providerSessionId,
+    command,
+    cwd: options.cwd,
+    projectPath: options.projectPath,
+    artifactPath: options.artifactPath,
+    model: options.model,
+    effort: options.effort,
+    permissionMode: options.permissionMode,
+    sessionSummary: options.sessionSummary,
+    images: options.images,
+    files: options.files,
+    attachments: options.attachments,
+    toolsSettings: options.toolsSettings,
+    skipPermissions: options.skipPermissions,
+    userId: options.userId ?? null,
+  };
+
+  return runtime.run(
+    request,
+    sink,
+    context,
+    options.signal ?? new AbortController().signal,
+  );
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -240,6 +301,36 @@ test('mapPiEvent maps tool execution start/end and retry/turn_end to status', ()
 });
 
 // T3: known event, illegal payload → ERR-PI-RPC-PROTOCOL (thrown, not success)
+test('mapPiEvent surfaces an upstream failure reported on the finalized message', () => {
+  assert.deepEqual(
+    mapPiEvent({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '400: The image format is illegal and cannot be opened',
+      },
+    }),
+    { kind: 'error', content: '400: The image format is illegal and cannot be opened' },
+  );
+});
+
+test('mapPiEvent falls back to a stable code when the failure carries no message', () => {
+  assert.deepEqual(
+    mapPiEvent({ type: 'message_end', message: { role: 'assistant', stopReason: 'error' } }),
+    { kind: 'error', content: 'ERR-PI-UPSTREAM' },
+  );
+});
+
+test('mapPiEvent ignores a message_end that completed normally', () => {
+  assert.equal(
+    mapPiEvent({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } }),
+    null,
+  );
+  assert.equal(mapPiEvent({ type: 'message_end', message: { role: 'user' } }), null);
+  assert.equal(mapPiEvent({ type: 'message_end' }), null);
+});
+
 test('T3: mapPiEvent throws ERR-PI-RPC-PROTOCOL on illegal known-event payload', () => {
   assert.throws(
     () => mapPiEvent({ type: 'message_update', assistantMessageEvent: { type: 'text_delta' } }),
@@ -268,13 +359,40 @@ test('isSettledEvent detects only agent_settled', () => {
 // Runtime state machine
 // ---------------------------------------------------------------------------
 
-// T1: normal stream → normalized text/thinking + one success complete
-test('T1: streams normalized text/thinking then completes once on agent_settled', async () => {
+test('an upstream failure reaches the client instead of settling as a silent no-op', async () => {
   const fake = new FakeRpc();
   const runtime = createPiRuntime({ createRpcClient: () => fake });
   const { writer, sent } = makeWriter();
 
-  const runPromise = runtime.run('hi', { sessionId: 'app-1' }, writer, makeContext());
+  const runPromise = runPi(runtime, 'look at this image', { sessionId: 'app-1' }, writer, makeContext());
+  await tick();
+
+  // Pi's retry loop: each attempt produces a finalized assistant message with
+  // no deltas, then `agent_settled` once the retries are exhausted.
+  fake.emit({
+    type: 'message_end',
+    message: {
+      role: 'assistant',
+      stopReason: 'error',
+      errorMessage: '400: The image format is illegal and cannot be opened',
+    },
+  });
+  fake.emit({ type: 'agent_settled' });
+
+  await runPromise;
+
+  const errors = sent.filter((message) => message.kind === 'error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].content, '400: The image format is illegal and cannot be opened');
+});
+
+// T1: normal stream -> normalized text/thinking + one completed outcome
+test('T1: streams normalized text/thinking then returns completed on agent_settled', async () => {
+  const fake = new FakeRpc();
+  const runtime = createPiRuntime({ createRpcClient: () => fake });
+  const { writer, sent } = makeWriter();
+
+  const runPromise = runPi(runtime, 'hi', { sessionId: 'app-1' }, writer, makeContext());
   await tick();
 
   fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hel' } });
@@ -284,18 +402,20 @@ test('T1: streams normalized text/thinking then completes once on agent_settled'
   fake.emit({ type: 'agent_settled' });
 
   const outcome = await runPromise;
-  assert.equal(outcome.status, 'settled');
+  assert.deepEqual(outcome, {
+    status: 'completed',
+    providerSessionId: 'native-1',
+    exitCode: 0,
+  });
 
   const streamDeltas = sent.filter((m) => m.kind === 'stream_delta');
   const thinking = sent.filter((m) => m.kind === 'thinking');
-  const completes = sent.filter((m) => m.kind === 'complete');
   assert.equal(streamDeltas.length, 1);
   assert.equal(streamDeltas[0].content, 'Hel');
   assert.equal(new Set(thinking.map((message) => message.id)).size, 1);
   assert.equal(thinking.at(-1)?.content, 'hmm');
   assert.equal(thinking.at(-1)?.isStreaming, false);
-  assert.equal(completes.length, 1);
-  assert.equal(completes[0].success, true);
+  assert.equal(sent.some((message) => message.kind === 'complete'), false);
 });
 
 test('Pi thinking deltas update one stable logical message and finish with authoritative content', async () => {
@@ -303,7 +423,7 @@ test('Pi thinking deltas update one stable logical message and finish with autho
   const runtime = createPiRuntime({ createRpcClient: () => fake, thinkingFlushMs: 0 });
   const { writer, sent } = makeWriter();
 
-  const runPromise = runtime.run('hi', { sessionId: 'app-1' }, writer, makeContext());
+  const runPromise = runPi(runtime, 'hi', { sessionId: 'app-1' }, writer, makeContext());
   await tick();
 
   fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } });
@@ -334,7 +454,7 @@ test('agent settlement finalizes a thinking block even when Pi omits thinking_en
   const runtime = createPiRuntime({ createRpcClient: () => fake, thinkingFlushMs: 0 });
   const { writer, sent } = makeWriter();
 
-  const runPromise = runtime.run('hi', { sessionId: 'app-1' }, writer, makeContext());
+  const runPromise = runPi(runtime, 'hi', { sessionId: 'app-1' }, writer, makeContext());
   await tick();
 
   fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } });
@@ -346,8 +466,7 @@ test('agent settlement finalizes a thinking block even when Pi omits thinking_en
   const thinking = sent.filter((message) => message.kind === 'thinking');
   assert.equal(thinking.at(-1)?.content, 'unfinished');
   assert.equal(thinking.at(-1)?.isStreaming, false);
-  assert.ok(sent.findIndex((message) => message.kind === 'thinking' && message.isStreaming === false)
-    < sent.findIndex((message) => message.kind === 'complete'));
+  assert.equal(sent.at(-1)?.kind, 'thinking');
 });
 
 test('separate Pi thinking lifecycles keep distinct logical message ids', async () => {
@@ -355,7 +474,7 @@ test('separate Pi thinking lifecycles keep distinct logical message ids', async 
   const runtime = createPiRuntime({ createRpcClient: () => fake, thinkingFlushMs: 0 });
   const { writer, sent } = makeWriter();
 
-  const runPromise = runtime.run('hi', { sessionId: 'app-1' }, writer, makeContext());
+  const runPromise = runPi(runtime, 'hi', { sessionId: 'app-1' }, writer, makeContext());
   await tick();
 
   fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } });
@@ -379,6 +498,7 @@ test('separate Pi thinking lifecycles keep distinct logical message ids', async 
 
 test('runtime forwards the selected model, existing native session, and thinking level', async () => {
   const fake = new FakeRpc();
+  fake.state = { sessionId: 'native-existing', isStreaming: false };
   let capturedOptions: RpcClientOptions | undefined;
   const runtime = createPiRuntime({
     createRpcClient: (options) => {
@@ -387,17 +507,22 @@ test('runtime forwards the selected model, existing native session, and thinking
     },
   });
   const { writer } = makeWriter();
+  const context = makeContext();
+  context.resolveProviderSessionId = () => {
+    throw new Error('Pi runtime must not resolve app/native identity');
+  };
 
-  const runPromise = runtime.run(
+  const runPromise = runPi(runtime,
     'hi',
     {
       sessionId: 'app-1',
+      providerSessionId: 'native-existing',
       cwd: '/tmp/pi-project',
       model: 'tcredit/deepseek-r1',
       effort: 'high',
     },
     writer,
-    makeContext('native-existing'),
+    context,
   );
   await tick();
 
@@ -409,7 +534,49 @@ test('runtime forwards the selected model, existing native session, and thinking
   });
 
   fake.emit({ type: 'agent_settled' });
-  await runPromise;
+  assert.equal((await runPromise).status, 'completed');
+});
+
+test('resume fails when get_state reports a different native session id', async () => {
+  const fake = new FakeRpc();
+  fake.state = { sessionId: 'native-other', isStreaming: false };
+  const runtime = createPiRuntime({ createRpcClient: () => fake });
+  const { writer, sent } = makeWriter();
+
+  const outcome = await runPi(
+    runtime,
+    'hi',
+    { providerSessionId: 'native-requested' },
+    writer,
+    makeContext(),
+  );
+
+  assert.equal(outcome.status, 'failed');
+  assert.equal(outcome.errorCode, 'ERR-PI-RPC-PROTOCOL');
+  assert.deepEqual(fake.promptCalls, []);
+  assert.equal(sent.filter((event) => event.kind === 'error').length, 1);
+});
+
+test('a fresh run never passes the app session id as a native RPC session id', async () => {
+  const fake = new FakeRpc();
+  let capturedOptions: RpcClientOptions | undefined;
+  const runtime = createPiRuntime({
+    createRpcClient: (options) => {
+      capturedOptions = options;
+      return fake;
+    },
+  });
+  const { writer } = makeWriter();
+
+  const run = runPi(runtime, 'hi', {
+    appSessionId: 'app-must-not-be-native',
+    providerSessionId: null,
+  }, writer, makeContext());
+  await tick();
+
+  assert.deepEqual(capturedOptions, { cwd: undefined });
+  fake.emit({ type: 'agent_settled' });
+  await run;
 });
 
 test('runtime closes the RPC subprocess after a settled run', async () => {
@@ -417,7 +584,7 @@ test('runtime closes the RPC subprocess after a settled run', async () => {
   const runtime = createPiRuntime({ createRpcClient: () => fake });
   const { writer } = makeWriter();
 
-  const runPromise = runtime.run('hi', { sessionId: 'app-1' }, writer, makeContext());
+  const runPromise = runPi(runtime, 'hi', { sessionId: 'app-1' }, writer, makeContext());
   await tick();
   fake.emit({ type: 'agent_settled' });
   await runPromise;
@@ -425,13 +592,13 @@ test('runtime closes the RPC subprocess after a settled run', async () => {
   assert.equal(fake.closeCalls.length, 1);
 });
 
-// T2: process close before agent_settled → ERR-PI-RUN-FAILED failure complete
+// T2: process close before agent_settled -> ERR-PI-RUN-FAILED outcome
 test('T2: process close before settle fails with ERR-PI-RUN-FAILED', async () => {
   const fake = new FakeRpc();
   const runtime = createPiRuntime({ createRpcClient: () => fake });
   const { writer, sent } = makeWriter();
 
-  const runPromise = runtime.run('hi', { sessionId: 'app-1' }, writer, makeContext());
+  const runPromise = runPi(runtime, 'hi', { sessionId: 'app-1' }, writer, makeContext());
   await tick();
 
   fake.closeProcess();
@@ -441,11 +608,9 @@ test('T2: process close before settle fails with ERR-PI-RUN-FAILED', async () =>
   assert.equal(outcome.errorCode, 'ERR-PI-RUN-FAILED');
 
   const errors = sent.filter((m) => m.kind === 'error');
-  const completes = sent.filter((m) => m.kind === 'complete');
   assert.equal(errors.length, 1);
   assert.equal(errors[0].code, 'ERR-PI-RUN-FAILED');
-  assert.equal(completes.length, 1);
-  assert.equal(completes[0].success, false);
+  assert.equal(sent.some((message) => message.kind === 'complete'), false);
 });
 
 // T3 (runtime side): illegal known-event payload → ERR-PI-RPC-PROTOCOL failure
@@ -454,7 +619,7 @@ test('T3: runtime fails with ERR-PI-RPC-PROTOCOL on illegal known-event payload'
   const runtime = createPiRuntime({ createRpcClient: () => fake });
   const { writer, sent } = makeWriter();
 
-  const runPromise = runtime.run('hi', { sessionId: 'app-1' }, writer, makeContext());
+  const runPromise = runPi(runtime, 'hi', { sessionId: 'app-1' }, writer, makeContext());
   await tick();
 
   fake.emit({ type: 'tool_execution_start', toolName: 'bash' });
@@ -471,7 +636,7 @@ test('T4: unknown event is ignored and does not affect the run', async () => {
   const runtime = createPiRuntime({ createRpcClient: () => fake });
   const { writer, sent } = makeWriter();
 
-  const runPromise = runtime.run('hi', { sessionId: 'app-1' }, writer, makeContext());
+  const runPromise = runPi(runtime, 'hi', { sessionId: 'app-1' }, writer, makeContext());
   await tick();
 
   fake.emit({ type: 'totally_unknown', foo: 1 });
@@ -479,45 +644,75 @@ test('T4: unknown event is ignored and does not affect the run', async () => {
   fake.emit({ type: 'agent_settled' });
 
   const outcome = await runPromise;
-  assert.equal(outcome.status, 'settled');
+  assert.equal(outcome.status, 'completed');
   assert.equal(sent.filter((m) => m.kind === 'stream_delta').length, 1);
 });
 
 // T5: binding happens before the first live event
 test('T5: persists app/native binding before the first live event', async () => {
   const fake = new FakeRpc();
-  fake.state = { sessionId: 'native-xyz', isStreaming: false };
+  fake.state = {
+    sessionId: 'native-xyz',
+    sessionFile: '/tmp/pi/native-xyz.jsonl',
+    isStreaming: false,
+  };
   const runtime = createPiRuntime({ createRpcClient: () => fake });
-  const { writer, sent, sessionIds } = makeWriter();
+  const { writer, sessionIds, bindings, operations } = makeWriter();
 
   // context returns null → app session not yet mapped → fresh binding expected
-  const runPromise = runtime.run('hi', { sessionId: 'app-1' }, writer, makeContext(null));
+  const runPromise = runPi(
+    runtime,
+    'hi',
+    { sessionId: 'native-xyz', providerSessionId: null },
+    writer,
+    makeContext(null),
+  );
   await tick();
 
   fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'x' } });
   fake.emit({ type: 'agent_settled' });
   await runPromise;
 
-  const bindIdx = sent.findIndex((m) => m.kind === 'session_created');
-  const firstLiveIdx = sent.findIndex((m) => m.kind === 'stream_delta');
-  assert.ok(bindIdx >= 0, 'binding event emitted');
+  const bindIdx = operations.indexOf('bind');
+  const firstLiveIdx = operations.indexOf('event:stream_delta');
+  assert.ok(bindIdx >= 0, 'binding emitted');
   assert.ok(bindIdx < firstLiveIdx, 'binding precedes first live event');
-  assert.equal(sent[bindIdx].newSessionId, 'native-xyz');
   assert.deepEqual(sessionIds, ['native-xyz']);
+  assert.deepEqual(bindings, [{
+    providerSessionId: 'native-xyz',
+    artifactPath: '/tmp/pi/native-xyz.jsonl',
+  }]);
+});
+
+test('a fresh run with no native id fails before prompting or streaming', async () => {
+  const fake = new FakeRpc();
+  fake.state = { sessionId: '', isStreaming: false };
+  const runtime = createPiRuntime({ createRpcClient: () => fake });
+  const { writer, sent } = makeWriter();
+
+  const run = runPi(runtime, 'hi', { providerSessionId: null }, writer, makeContext());
+  await tick();
+  fake.emit({ type: 'agent_settled' });
+  const outcome = await run;
+
+  assert.equal(outcome.status, 'failed');
+  assert.equal(outcome.errorCode, 'ERR-PI-RPC-PROTOCOL');
+  assert.deepEqual(fake.promptCalls, []);
+  assert.equal(sent.filter((event) => event.kind === 'error').length, 1);
 });
 
 // ---------------------------------------------------------------------------
 // Abort (T7, T8, T9)
 // ---------------------------------------------------------------------------
 
-// T7: abort a streaming run via request.signal → one aborted complete
-test('T7: abort during stream produces exactly one aborted complete', async () => {
+// T7: abort a streaming run via AbortSignal -> one aborted outcome
+test('T7: abort during stream returns one aborted outcome without a terminal event', async () => {
   const fake = new FakeRpc();
   const runtime = createPiRuntime({ createRpcClient: () => fake, abortGraceMs: 5000 });
   const { writer, sent } = makeWriter();
   const controller = new AbortController();
 
-  const runPromise = runtime.run(
+  const runPromise = runPi(runtime,
     'hi',
     { sessionId: 'app-1', signal: controller.signal },
     writer,
@@ -528,16 +723,44 @@ test('T7: abort during stream produces exactly one aborted complete', async () =
   fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'x' } });
   controller.abort();
   await tick();
+  fake.emit({
+    type: 'message_update',
+    assistantMessageEvent: { type: 'text_delta', delta: 'late-during-abort' },
+  });
   // Pi responds to abort with agent_settled inside the grace window.
   fake.emit({ type: 'agent_settled' });
 
   const outcome = await runPromise;
   assert.equal(outcome.status, 'aborted');
   assert.equal(fake.abortCalls, 1);
-  const completes = sent.filter((m) => m.kind === 'complete');
-  assert.equal(completes.length, 1);
-  assert.equal(completes[0].aborted, true);
-  assert.equal(completes[0].success, false);
+  assert.equal(sent.some((message) => message.kind === 'complete'), false);
+  assert.equal(sent.some((message) => message.content === 'late-during-abort'), false);
+});
+
+test('abort while RPC startup is pending never binds or prompts afterward', async () => {
+  const fake = new FakeRpc();
+  let releaseStart!: () => void;
+  fake.startGate = new Promise<void>((resolve) => {
+    releaseStart = resolve;
+  });
+  const runtime = createPiRuntime({ createRpcClient: () => fake, abortGraceMs: 10 });
+  const { writer, bindings } = makeWriter();
+  const controller = new AbortController();
+
+  const run = runPi(
+    runtime,
+    'must-not-run',
+    { signal: controller.signal },
+    writer,
+    makeContext(),
+  );
+  await Promise.resolve();
+  controller.abort();
+  releaseStart();
+
+  assert.equal((await run).status, 'aborted');
+  assert.deepEqual(bindings, []);
+  assert.deepEqual(fake.promptCalls, []);
 });
 
 // T8: late native event after abort → still only one terminal outcome
@@ -547,7 +770,7 @@ test('T8: late native event after abort yields a single terminal', async () => {
   const { writer, sent } = makeWriter();
   const controller = new AbortController();
 
-  const runPromise = runtime.run(
+  const runPromise = runPi(runtime,
     'hi',
     { sessionId: 'app-1', signal: controller.signal },
     writer,
@@ -565,20 +788,18 @@ test('T8: late native event after abort yields a single terminal', async () => {
   fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'late' } });
   await tick();
 
-  const completes = sent.filter((m) => m.kind === 'complete');
-  assert.equal(completes.length, 1);
-  assert.equal(completes[0].aborted, true);
+  assert.equal(sent.some((message) => message.kind === 'complete'), false);
   assert.equal(sent.filter((m) => m.content === 'late').length, 0);
 });
 
-// T9: grace window elapses with no response → force-kill + aborted complete
-test('T9: force-kills after grace window and still completes as aborted', async () => {
+// T9: grace window elapses with no response -> force-kill + aborted outcome
+test('T9: force-kills after grace window and returns aborted', async () => {
   const fake = new FakeRpc();
   const runtime = createPiRuntime({ createRpcClient: () => fake, abortGraceMs: 10 });
   const { writer, sent } = makeWriter();
   const controller = new AbortController();
 
-  const runPromise = runtime.run(
+  const runPromise = runPi(runtime,
     'hi',
     { sessionId: 'app-1', signal: controller.signal },
     writer,
@@ -592,25 +813,55 @@ test('T9: force-kills after grace window and still completes as aborted', async 
   assert.equal(outcome.status, 'aborted');
   assert.equal(fake.abortCalls, 1);
   assert.deepEqual(fake.closeCalls, [0]);
-  const completes = sent.filter((m) => m.kind === 'complete');
-  assert.equal(completes.length, 1);
-  assert.equal(completes[0].aborted, true);
+  assert.equal(sent.some((message) => message.kind === 'complete'), false);
+
+  fake.emit({ type: 'agent_settled' });
+  await tick();
+  assert.deepEqual(fake.closeCalls, [0]);
 });
 
-// abort() by app session id targets runs owned by that session only
-test('abort(sessionId) aborts the matching run', async () => {
-  const fake = new FakeRpc();
-  const runtime = createPiRuntime({ createRpcClient: () => fake, abortGraceMs: 10 });
-  const { writer } = makeWriter();
+test('two Pi runs have isolated cancellation signals and RPC clients', async () => {
+  const firstRpc = new FakeRpc();
+  firstRpc.state = { sessionId: 'native-first', isStreaming: false };
+  const secondRpc = new FakeRpc();
+  secondRpc.state = { sessionId: 'native-second', isStreaming: false };
+  const clients = [firstRpc, secondRpc];
+  const runtime = createPiRuntime({
+    createRpcClient: () => {
+      const client = clients.shift();
+      assert.ok(client);
+      return client;
+    },
+    abortGraceMs: 5_000,
+  });
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const firstOutput = makeWriter();
+  const secondOutput = makeWriter();
 
-  const runPromise = runtime.run('hi', { sessionId: 'app-1' }, writer, makeContext());
+  const firstRun = runPi(runtime, 'first', {
+    appSessionId: 'app-first',
+    signal: firstController.signal,
+  }, firstOutput.writer, makeContext());
+  const secondRun = runPi(runtime, 'second', {
+    appSessionId: 'app-second',
+    signal: secondController.signal,
+  }, secondOutput.writer, makeContext());
   await tick();
 
-  assert.equal(runtime.abort('other-session'), false);
-  assert.equal(runtime.abort('app-1'), true);
+  firstController.abort();
+  firstRpc.emit({ type: 'agent_settled' });
+  secondRpc.emit({ type: 'agent_settled' });
 
-  const outcome = await runPromise;
-  assert.equal(outcome.status, 'aborted');
+  assert.equal((await firstRun).status, 'aborted');
+  assert.equal((await secondRun).status, 'completed');
+  assert.equal(firstRpc.abortCalls, 1);
+  assert.equal(secondRpc.abortCalls, 0);
+});
+
+test('Pi runtime exposes no provider-owned abort entry point', () => {
+  const runtime = createPiRuntime();
+  assert.equal('abort' in runtime, false);
 });
 
 // ---------------------------------------------------------------------------

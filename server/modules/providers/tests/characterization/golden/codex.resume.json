@@ -1,0 +1,20 @@
+{
+  "contextCalls": [
+    {
+      "call": "resolveProviderSessionId",
+      "args": [
+        "app-session-codex"
+      ]
+    },
+    {
+      "call": "resolveResumeModel",
+      "args": [
+        "app-session-codex",
+        "gpt-5"
+      ]
+    }
+  ],
+  "events": [],
+  "boundSessionIds": [],
+  "sessionCreatedEvents": 0
+}

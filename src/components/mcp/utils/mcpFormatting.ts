@@ -1,17 +1,14 @@
-import { MCP_SUPPORTED_TRANSPORTS, MCP_SUPPORTS_WORKING_DIRECTORY } from '../constants';
 import type {
   KeyValueMap,
   McpFormState,
   McpProvider,
   McpScope,
   McpTransport,
+  ProviderMcpCapabilities,
   UpsertProviderMcpServerPayload,
 } from '../types';
 
-type CreateMcpPayloadOptions = {
-  supportedTransports?: McpTransport[];
-  supportsWorkingDirectory?: boolean;
-  includeProviderSpecificFields?: boolean;
+type CreateMcpPayloadOptions = ProviderMcpCapabilities & {
   unsupportedTransportMessage?: (transport: McpTransport) => string;
 };
 
@@ -89,16 +86,35 @@ export const getErrorMessage = (error: unknown): string => (
 const assertSupportedTransport = (
   provider: McpProvider,
   transport: McpTransport,
-  options?: CreateMcpPayloadOptions,
+  options: CreateMcpPayloadOptions,
 ) => {
-  const supportedTransports = options?.supportedTransports ?? MCP_SUPPORTED_TRANSPORTS[provider];
-  if (supportedTransports.includes(transport)) {
+  if (options.supportedTransports.includes(transport)) {
     return;
   }
 
   throw new Error(
-    options?.unsupportedTransportMessage?.(transport) ?? `${provider} does not support ${transport} MCP servers`,
+    options.unsupportedTransportMessage?.(transport) ?? `${provider} does not support ${transport} MCP servers`,
   );
+};
+
+const requireMcpCapabilities = (
+  options: CreateMcpPayloadOptions | undefined,
+): CreateMcpPayloadOptions => {
+  if (!options) {
+    throw new Error('MCP capabilities are unavailable');
+  }
+
+  return options;
+};
+
+const assertSupportedScope = (
+  provider: McpProvider,
+  scope: McpScope,
+  options: CreateMcpPayloadOptions,
+) => {
+  if (!options.supportedScopes.includes(scope)) {
+    throw new Error(`${provider} does not support ${scope} MCP scope`);
+  }
 };
 
 export const parseJsonMcpPayload = (
@@ -106,6 +122,7 @@ export const parseJsonMcpPayload = (
   formData: McpFormState,
   options?: CreateMcpPayloadOptions,
 ): UpsertProviderMcpServerPayload => {
+  const capabilities = requireMcpCapabilities(options);
   const parsed = JSON.parse(formData.jsonInput) as unknown;
   if (!isRecord(parsed)) {
     throw new Error('JSON configuration must be an object');
@@ -117,7 +134,8 @@ export const parseJsonMcpPayload = (
     throw new Error('Missing required field: type');
   }
 
-  assertSupportedTransport(provider, transport, options);
+  assertSupportedScope(provider, formData.scope, capabilities);
+  assertSupportedTransport(provider, transport, capabilities);
 
   if (transport === 'stdio' && !readString(parsed.command)) {
     throw new Error('stdio type requires a command field');
@@ -135,18 +153,18 @@ export const parseJsonMcpPayload = (
     command: readString(parsed.command),
     args: readStringArray(parsed.args) ?? [],
     env: readStringRecord(parsed.env) ?? {},
-    cwd: (options?.supportsWorkingDirectory ?? MCP_SUPPORTS_WORKING_DIRECTORY[provider])
+    cwd: capabilities.supportsWorkingDirectory
       ? readString(parsed.cwd)
       : undefined,
     url: readString(parsed.url),
     headers: readStringRecord(parsed.headers ?? parsed.http_headers) ?? {},
-    envVars: (options?.includeProviderSpecificFields ?? provider === 'codex')
+    envVars: capabilities.supportsEnvironmentVariableReferences
       ? readStringArray(parsed.envVars ?? parsed.env_vars) ?? []
       : undefined,
-    bearerTokenEnvVar: (options?.includeProviderSpecificFields ?? provider === 'codex')
+    bearerTokenEnvVar: capabilities.supportsEnvironmentVariableReferences
       ? readString(parsed.bearerTokenEnvVar ?? parsed.bearer_token_env_var)
       : undefined,
-    envHttpHeaders: (options?.includeProviderSpecificFields ?? provider === 'codex')
+    envHttpHeaders: capabilities.supportsEnvironmentVariableReferences
       ? readStringRecord(parsed.envHttpHeaders ?? parsed.env_http_headers) ?? {}
       : undefined,
   };
@@ -157,14 +175,16 @@ export const createMcpPayloadFromForm = (
   formData: McpFormState,
   options?: CreateMcpPayloadOptions,
 ): UpsertProviderMcpServerPayload => {
+  const capabilities = requireMcpCapabilities(options);
   if (formData.importMode === 'json') {
-    return parseJsonMcpPayload(provider, formData, options);
+    return parseJsonMcpPayload(provider, formData, capabilities);
   }
 
-  assertSupportedTransport(provider, formData.transport, options);
+  assertSupportedScope(provider, formData.scope, capabilities);
+  assertSupportedTransport(provider, formData.transport, capabilities);
 
-  const supportsWorkingDirectory = options?.supportsWorkingDirectory ?? MCP_SUPPORTS_WORKING_DIRECTORY[provider];
-  const includeProviderSpecificFields = options?.includeProviderSpecificFields ?? provider === 'codex';
+  const supportsWorkingDirectory = capabilities.supportsWorkingDirectory;
+  const supportsEnvironmentVariableReferences = capabilities.supportsEnvironmentVariableReferences;
 
   return {
     name: formData.name.trim(),
@@ -177,8 +197,10 @@ export const createMcpPayloadFromForm = (
     cwd: supportsWorkingDirectory ? formData.cwd.trim() || undefined : undefined,
     url: formData.transport !== 'stdio' ? formData.url.trim() : undefined,
     headers: formData.transport !== 'stdio' ? formData.headers : undefined,
-    envVars: includeProviderSpecificFields ? formData.envVars : undefined,
-    bearerTokenEnvVar: includeProviderSpecificFields ? formData.bearerTokenEnvVar.trim() || undefined : undefined,
-    envHttpHeaders: includeProviderSpecificFields ? formData.envHttpHeaders : undefined,
+    envVars: supportsEnvironmentVariableReferences ? formData.envVars : undefined,
+    bearerTokenEnvVar: supportsEnvironmentVariableReferences
+      ? formData.bearerTokenEnvVar.trim() || undefined
+      : undefined,
+    envHttpHeaders: supportsEnvironmentVariableReferences ? formData.envHttpHeaders : undefined,
   };
 };

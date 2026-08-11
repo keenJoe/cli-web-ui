@@ -5,7 +5,7 @@ import type { SkillsProject } from '../../../../../skills/types';
 import { ProviderSkills } from '../../../../../skills';
 
 import AccountContent from './content/AccountContent';
-import PermissionsContent from './content/PermissionsContent';
+import ProviderPermissionsContent from './content/ProviderPermissionsContent';
 
 export default function AgentCategoryContentSection({
   selectedAgent,
@@ -18,6 +18,11 @@ export default function AgentCategoryContentSection({
   codexPermissionMode,
   onCodexPermissionModeChange,
   projects,
+  permissionModes,
+  defaultPermissionMode,
+  supportsMcp,
+  mcpCapabilities,
+  supportsSkills,
 }: AgentCategoryContentSectionProps) {
   return (
     <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-4">
@@ -29,51 +34,21 @@ export default function AgentCategoryContentSection({
         />
       )}
 
-      {selectedCategory === 'permissions' && selectedAgent === 'claude' && (
-        <PermissionsContent
-          agent="claude"
-          skipPermissions={claudePermissions.skipPermissions}
-          onSkipPermissionsChange={(value) => {
-            onClaudePermissionsChange({ ...claudePermissions, skipPermissions: value });
-          }}
-          allowedTools={claudePermissions.allowedTools}
-          onAllowedToolsChange={(value) => {
-            onClaudePermissionsChange({ ...claudePermissions, allowedTools: value });
-          }}
-          disallowedTools={claudePermissions.disallowedTools}
-          onDisallowedToolsChange={(value) => {
-            onClaudePermissionsChange({ ...claudePermissions, disallowedTools: value });
-          }}
+      {selectedCategory === 'permissions' && permissionModes.length > 0 && (
+        <ProviderPermissionsContent
+          agent={selectedAgent}
+          permissionModes={permissionModes}
+          defaultPermissionMode={defaultPermissionMode}
+          claudePermissions={claudePermissions}
+          onClaudePermissionsChange={onClaudePermissionsChange}
+          cursorPermissions={cursorPermissions}
+          onCursorPermissionsChange={onCursorPermissionsChange}
+          codexPermissionMode={codexPermissionMode}
+          onCodexPermissionModeChange={onCodexPermissionModeChange}
         />
       )}
 
-      {selectedCategory === 'permissions' && selectedAgent === 'cursor' && (
-        <PermissionsContent
-          agent="cursor"
-          skipPermissions={cursorPermissions.skipPermissions}
-          onSkipPermissionsChange={(value) => {
-            onCursorPermissionsChange({ ...cursorPermissions, skipPermissions: value });
-          }}
-          allowedCommands={cursorPermissions.allowedCommands}
-          onAllowedCommandsChange={(value) => {
-            onCursorPermissionsChange({ ...cursorPermissions, allowedCommands: value });
-          }}
-          disallowedCommands={cursorPermissions.disallowedCommands}
-          onDisallowedCommandsChange={(value) => {
-            onCursorPermissionsChange({ ...cursorPermissions, disallowedCommands: value });
-          }}
-        />
-      )}
-
-      {selectedCategory === 'permissions' && selectedAgent === 'codex' && (
-        <PermissionsContent
-          agent="codex"
-          permissionMode={codexPermissionMode}
-          onPermissionModeChange={onCodexPermissionModeChange}
-        />
-      )}
-
-      {selectedCategory === 'mcp' && selectedAgent !== 'pi' && (
+      {selectedCategory === 'mcp' && supportsMcp && mcpCapabilities && (
         // SettingsProject.name is populated from the DB projectId by
         // normalizeProjectForSettings, so we can map it straight through.
         <McpServers
@@ -84,10 +59,11 @@ export default function AgentCategoryContentSection({
             fullPath: project.fullPath,
             path: project.path,
           }))}
+          mcpCapabilities={mcpCapabilities}
         />
       )}
 
-      {selectedCategory === 'skills' && selectedAgent !== 'opencode' && (
+      {selectedCategory === 'skills' && supportsSkills && (
         <ProviderSkills
           selectedProvider={selectedAgent}
           currentProjects={projects.map<SkillsProject>((project) => ({

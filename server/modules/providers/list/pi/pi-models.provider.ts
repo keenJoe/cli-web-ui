@@ -10,7 +10,7 @@
  * returns no models is surfaced as `PI_NOT_AUTHENTICATED` rather than a fake
  * empty catalog, so callers never mistake "not authenticated" for "success".
  */
-import type { IProviderModels } from '@/shared/interfaces.js';
+import type { IProviderModels, ProviderModelsCatalog } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
   ProviderModelOption,
@@ -61,13 +61,15 @@ const mapModel = (row: PiModelRow): ProviderModelOption => ({
 });
 
 export class PiModelsProvider implements IProviderModels {
+  readonly usesCatalogDefaultWhenModelOmitted = true as const;
+
   private readonly rpc: PiModelsRpc;
 
   constructor(rpc: PiModelsRpc) {
     this.rpc = rpc;
   }
 
-  async getSupportedModels(): Promise<ProviderModelsDefinition> {
+  async getSupportedModels(): Promise<ProviderModelsCatalog> {
     let rows: PiModelRow[];
     let stateModel: string | undefined;
 
@@ -89,13 +91,24 @@ export class PiModelsProvider implements IProviderModels {
       (stateModel && options.find((option) => option.value === stateModel)?.value) ??
       options[0].value;
 
-    return {
+    const models: ProviderModelsDefinition = {
       OPTIONS: options,
       DEFAULT: defaultValue,
     };
+
+    return {
+      models,
+      fingerprint: '',
+      cacheable: true,
+    };
+  }
+
+  getCachedCatalogFingerprint(): string {
+    // Pi 无配置文件驱动模型列表，空指纹使缓存键等价于 provider-only 键。
+    return '';
   }
 
   async getCurrentActiveModel(_sessionId?: string): Promise<ProviderCurrentActiveModel> {
-    return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+    return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
   }
 }

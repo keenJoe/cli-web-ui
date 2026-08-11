@@ -13,9 +13,15 @@ import {
   writeJsonConfig,
 } from '@/shared/utils.js';
 
+/** CursorProvider uses this facet to read and persist Cursor MCP server configuration. */
 export class CursorMcpProvider extends McpProvider {
   constructor() {
-    super('cursor', ['user', 'project'], ['stdio', 'http']);
+    super('cursor', {
+      supportedScopes: ['user', 'project'],
+      supportedTransports: ['stdio', 'http'],
+      supportsWorkingDirectory: true,
+      supportsEnvironmentVariableReferences: false,
+    });
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

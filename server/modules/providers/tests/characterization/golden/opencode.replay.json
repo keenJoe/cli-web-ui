@@ -1,0 +1,54 @@
+{
+  "live": [
+    {
+      "kind": "thinking",
+      "role": null,
+      "content": "Plan the read.",
+      "toolName": null
+    },
+    {
+      "kind": "tool_use",
+      "role": null,
+      "content": null,
+      "toolName": "read"
+    },
+    {
+      "kind": "stream_delta",
+      "role": null,
+      "content": "Here is what I found.",
+      "toolName": null
+    },
+    {
+      "kind": "stream_end",
+      "role": null,
+      "content": null,
+      "toolName": null
+    }
+  ],
+  "history": [
+    {
+      "kind": "text",
+      "role": "user",
+      "content": "Show me the README",
+      "toolName": null
+    },
+    {
+      "kind": "thinking",
+      "role": null,
+      "content": "Plan the read.",
+      "toolName": null
+    },
+    {
+      "kind": "tool_use",
+      "role": null,
+      "content": null,
+      "toolName": "read"
+    },
+    {
+      "kind": "text",
+      "role": "assistant",
+      "content": "Here is what I found.",
+      "toolName": null
+    }
+  ]
+}

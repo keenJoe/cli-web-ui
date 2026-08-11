@@ -1,10 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import TOML from '@iarna/toml';
 
-import type { IProviderModels } from '@/shared/interfaces.js';
+import type { IProviderModels, ProviderModelsCatalog } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
   ProviderModelOption,
@@ -12,9 +13,75 @@ import type {
 } from '@/shared/types.js';
 import {
   buildDefaultProviderCurrentActiveModel,
+  computeModelsFingerprint,
+  fetchOpenAICompatModels,
   readObjectRecord,
   readOptionalString,
 } from '@/shared/utils.js';
+
+import { CodexConfig } from './codex-config.js';
+
+/**
+ * Synchronous mirror of `CodexConfig.load()` credential resolution, reduced to
+ * the credential value the fingerprint hashes. Keeps the pre-fetch fingerprint
+ * aligned with what `getSupportedModels` returns without pulling the catalog.
+ */
+const readCodexCredentialValue = (provider: Record<string, any>): string | undefined => {
+  const bearerToken = readOptionalString(provider.experimental_bearer_token);
+  if (bearerToken) {
+    return bearerToken;
+  }
+
+  const apiKey = readOptionalString(provider.api_key);
+  if (apiKey) {
+    return apiKey;
+  }
+
+  const envKey = readOptionalString(provider.env_key);
+  if (envKey) {
+    return readOptionalString(process.env[envKey]);
+  }
+
+  return undefined;
+};
+
+/**
+ * Computes the codex catalog fingerprint from `config.toml` only, without
+ * loading models. Config read failures mirror `CodexConfig.load()`: missing or
+ * malformed config yields an empty fingerprint.
+ */
+const computeCodexCatalogFingerprint = (configPath: string): string => {
+  let raw: string;
+  try {
+    raw = readFileSync(configPath, 'utf8');
+  } catch {
+    return '';
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = TOML.parse(raw);
+  } catch {
+    return '';
+  }
+
+  const config = readObjectRecord(parsed);
+  if (!config) {
+    return '';
+  }
+
+  const model = readOptionalString(config.model);
+  const modelProvider = readOptionalString(config.model_provider);
+  const providers = readObjectRecord(config.model_providers);
+  const activeProvider = modelProvider ? readObjectRecord(providers?.[modelProvider]) : null;
+
+  return computeModelsFingerprint({
+    baseUrl: activeProvider ? readOptionalString(activeProvider.base_url) : undefined,
+    credential: activeProvider ? readCodexCredentialValue(activeProvider) : undefined,
+    modelProvider,
+    model,
+  });
+};
 
 export const CODEX_FALLBACK_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
@@ -130,10 +197,91 @@ const buildCodexModelsDefinition = (models: CodexCachedModel[]): ProviderModelsD
   };
 };
 
+// The gateway `/v1/models` payload only carries `{value, label}` and drops the
+// reasoning-effort metadata `models_cache.json` supplies. Re-attach the levels
+// the Codex SDK accepts (`ModelReasoningEffort`) so the composer's Reasoning
+// selector keeps working for config-driven catalogs.
+const CODEX_FETCHED_EFFORT: NonNullable<ProviderModelOption['effort']> = {
+  default: 'medium',
+  values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }],
+};
+
+const buildCodexModelsDefinitionFromFetched = (
+  fetched: Array<{ value: string; label: string }>,
+): ProviderModelsDefinition => {
+  if (fetched.length === 0) {
+    return CODEX_FALLBACK_MODELS;
+  }
+
+  return {
+    OPTIONS: fetched.map((option) => ({ ...option, effort: CODEX_FETCHED_EFFORT })),
+    DEFAULT: fetched[0]?.value ?? CODEX_FALLBACK_MODELS.DEFAULT,
+  };
+};
+
+type CodexProviderModelsDependencies = {
+  configPath?: string;
+  modelsCachePath?: string;
+};
+
 export class CodexProviderModels implements IProviderModels {
-  async getSupportedModels(): Promise<ProviderModelsDefinition> {
+  readonly usesCatalogDefaultWhenModelOmitted = true as const;
+
+  private readonly config: CodexConfig;
+  private readonly modelsCachePath: string;
+  private readonly configPath: string;
+
+  constructor(dependencies: CodexProviderModelsDependencies = {}) {
+    this.config = new CodexConfig(dependencies.configPath);
+    this.modelsCachePath = dependencies.modelsCachePath ?? CODEX_MODELS_CACHE_PATH;
+    this.configPath = dependencies.configPath ?? CODEX_CONFIG_PATH;
+  }
+
+  getCachedCatalogFingerprint(): string {
+    return computeCodexCatalogFingerprint(this.configPath);
+  }
+
+  async getSupportedModels(): Promise<ProviderModelsCatalog> {
+    const config = await this.config.load();
+    const fingerprint = config
+      ? computeModelsFingerprint({
+          baseUrl: config.baseUrl,
+          credential: config.credential?.value,
+          modelProvider: config.modelProvider,
+          model: config.model,
+        })
+      : '';
+
+    if (config?.baseUrl && config.credential) {
+      const fetched = await fetchOpenAICompatModels(config.baseUrl, config.credential.value);
+      if (fetched) {
+        return {
+          models: buildCodexModelsDefinitionFromFetched(fetched),
+          fingerprint,
+          cacheable: true,
+        };
+      }
+
+      // The configured API failed: fall back to the existing sources while
+      // keeping the full fingerprint so a different configuration never shares
+      // this entry, and stay out of the long-lived disk cache.
+      return {
+        models: await this.loadFallbackModels(),
+        fingerprint,
+        cacheable: false,
+      };
+    }
+
+    return {
+      models: await this.loadFallbackModels(),
+      fingerprint,
+      cacheable: fingerprint === '',
+    };
+  }
+
+  private async loadFallbackModels(): Promise<ProviderModelsDefinition> {
     try {
-      const raw = await readFile(CODEX_MODELS_CACHE_PATH, 'utf8');
+      const raw = await readFile(this.modelsCachePath, 'utf8');
       const parsed = readObjectRecord(JSON.parse(raw));
       const models = Array.isArray(parsed?.models)
         ? parsed.models.filter(isCodexCachedModel)
@@ -151,14 +299,14 @@ export class CodexProviderModels implements IProviderModels {
       const parsed = readObjectRecord(TOML.parse(raw));
       const model = readOptionalString(parsed?.model);
       if (!model) {
-        return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+        return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
       }
 
       return {
         model,
       };
     } catch {
-      return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+      return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
     }
   }
 }

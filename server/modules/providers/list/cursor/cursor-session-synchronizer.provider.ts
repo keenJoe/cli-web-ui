@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -41,10 +40,17 @@ export class CursorSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly cursorHome = path.join(os.homedir(), '.cursor');
 
   /**
+   * Resolves Cursor's project transcript root for the sessions watcher.
+   */
+  getWatchRoots(): string[] {
+    return [path.join(this.cursorHome, 'projects')];
+  }
+
+  /**
    * Scans Cursor chats and upserts discovered sessions into DB.
    */
   async synchronize(since?: Date): Promise<number> {
-    const projectsDir = path.join(this.cursorHome, 'projects');
+    const projectsDir = this.getWatchRoots()[0];
 
     let processed = 0;
 

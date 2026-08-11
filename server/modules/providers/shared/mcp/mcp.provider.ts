@@ -24,17 +24,25 @@ const normalizeServerName = (name: string): string => {
  */
 export abstract class McpProvider implements IProviderMcp {
   protected readonly provider: LLMProvider;
-  protected readonly supportedScopes: McpScope[];
-  protected readonly supportedTransports: McpTransport[];
+  readonly supportedScopes: readonly McpScope[];
+  readonly supportedTransports: readonly McpTransport[];
+  readonly supportsWorkingDirectory: boolean;
+  readonly supportsEnvironmentVariableReferences: boolean;
 
   protected constructor(
     provider: LLMProvider,
-    supportedScopes: McpScope[],
-    supportedTransports: McpTransport[],
+    capabilities: {
+      supportedScopes: readonly McpScope[];
+      supportedTransports: readonly McpTransport[];
+      supportsWorkingDirectory: boolean;
+      supportsEnvironmentVariableReferences: boolean;
+    },
   ) {
     this.provider = provider;
-    this.supportedScopes = supportedScopes;
-    this.supportedTransports = supportedTransports;
+    this.supportedScopes = [...capabilities.supportedScopes];
+    this.supportedTransports = [...capabilities.supportedTransports];
+    this.supportsWorkingDirectory = capabilities.supportsWorkingDirectory;
+    this.supportsEnvironmentVariableReferences = capabilities.supportsEnvironmentVariableReferences;
   }
 
   async listServers(options?: { workspacePath?: string }): Promise<Record<McpScope, ProviderMcpServer[]>> {

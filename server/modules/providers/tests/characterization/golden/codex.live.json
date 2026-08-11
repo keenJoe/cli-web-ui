@@ -1,0 +1,42 @@
+[
+  {
+    "id": "<generated-id>",
+    "sessionId": "app-session-codex",
+    "timestamp": "<generated-timestamp>",
+    "provider": "codex",
+    "kind": "text",
+    "role": "assistant",
+    "content": "Plan the edit."
+  },
+  {
+    "id": "<generated-id>",
+    "sessionId": "app-session-codex",
+    "timestamp": "<generated-timestamp>",
+    "provider": "codex",
+    "kind": "text",
+    "role": "assistant",
+    "content": "Here is what I found."
+  },
+  {
+    "id": "<generated-id>",
+    "sessionId": "app-session-codex",
+    "timestamp": "<generated-timestamp>",
+    "provider": "codex",
+    "kind": "tool_use",
+    "toolName": "Bash",
+    "toolInput": {
+      "command": "cat README.md"
+    },
+    "toolId": "<generated-id>",
+    "output": "# Title",
+    "exitCode": 0,
+    "status": "completed"
+  },
+  {
+    "id": "<generated-id>",
+    "sessionId": "app-session-codex",
+    "timestamp": "<generated-timestamp>",
+    "provider": "codex",
+    "kind": "complete"
+  }
+]

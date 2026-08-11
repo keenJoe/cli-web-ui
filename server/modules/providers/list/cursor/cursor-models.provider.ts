@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import crossSpawn from 'cross-spawn';
 
-import type { IProviderModels } from '@/shared/interfaces.js';
+import type { IProviderModels, ProviderModelsCatalog } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
   ProviderModelOption,
@@ -741,25 +741,36 @@ const resolveCursorSessionStorePath = async (sessionId: string): Promise<string 
 };
 
 export class CursorProviderModels implements IProviderModels {
-  async getSupportedModels(): Promise<ProviderModelsDefinition> {
+  async getSupportedModels(): Promise<ProviderModelsCatalog> {
     try {
       const stdout = await runCursorListModels();
       const models = parseModelsOutput(stdout);
-      return buildCursorModelsDefinition(models);
+      const definition = buildCursorModelsDefinition(models);
+      const isFallback = models.length === 0 || definition === CURSOR_FALLBACK_MODELS;
+      return {
+        models: definition,
+        fingerprint: '',
+        cacheable: !isFallback,
+      };
     } catch {
-      return CURSOR_FALLBACK_MODELS;
+      return { models: CURSOR_FALLBACK_MODELS, fingerprint: '', cacheable: false };
     }
+  }
+
+  getCachedCatalogFingerprint(): string {
+    // Cursor 无配置文件驱动模型列表，空指纹使缓存键等价于 provider-only 键。
+    return '';
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {
     if (!sessionId?.trim()) {
-      return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+      return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
     }
 
     try {
       const storeDbPath = await resolveCursorSessionStorePath(sessionId);
       if (!storeDbPath) {
-        return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+        return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
       }
 
       const { default: Database } = await import('better-sqlite3');
@@ -775,7 +786,7 @@ export class CursorProviderModels implements IProviderModels {
             ? Buffer.from(row.value.trim(), 'hex').toString('utf8')
             : '';
         if (!metadataText) {
-          return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+          return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
         }
 
         const metadata = JSON.parse(metadataText) as { lastUsedModel?: string };
@@ -791,7 +802,7 @@ export class CursorProviderModels implements IProviderModels {
       // Fall through to the provider default when Cursor metadata cannot be read.
     }
 
-    return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+    return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
   }
 }
 

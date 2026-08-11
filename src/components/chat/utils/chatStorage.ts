@@ -1,4 +1,5 @@
 import type { ClaudeSettings } from '../types/types';
+import type { LLMProvider } from '../../../types/app';
 
 export const CLAUDE_SETTINGS_KEY = 'claude-settings';
 
@@ -44,15 +45,15 @@ export const safeLocalStorage = {
 };
 
 /**
- * Composer options captured when a message is queued, so the message can be
- * sent later with the exact settings (model, permission mode, tools) the
- * session's composer had at queue time — even from outside the composer,
- * e.g. the app-level auto-send that fires while another session is viewed.
+ * Composer options captured when a message is queued. Replay paths must
+ * revalidate model and permission values against current backend state.
  */
 export type QueuedSendOptions = Record<string, unknown>;
 
 export type StoredQueuedMessage = {
   content: string;
+  /** Provider needed to re-resolve capabilities and the active session model. */
+  provider?: LLMProvider;
   options?: QueuedSendOptions;
   /** Legacy image-only descriptors retained for queued draft compatibility. */
   images?: unknown[];
@@ -78,14 +79,19 @@ export function readQueuedMessage(sessionId: string): StoredQueuedMessage | null
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (parsed && typeof parsed === 'object' && typeof (parsed as StoredQueuedMessage).content === 'string') {
-      const { content, options, images, attachments } = parsed as StoredQueuedMessage;
+      const { content, provider, options, images, attachments } = parsed as StoredQueuedMessage;
       const normalizedAttachments = Array.isArray(attachments)
         ? attachments
         : Array.isArray(images)
           ? images
           : [];
       return content.trim() || normalizedAttachments.length > 0
-        ? { content, options, attachments: normalizedAttachments }
+        ? {
+            content,
+            provider: typeof provider === 'string' ? provider as LLMProvider : undefined,
+            options,
+            attachments: normalizedAttachments,
+          }
         : null;
     }
   } catch {

@@ -2,9 +2,14 @@ import { scanStateDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { LLMProvider } from '@/shared/types.js';
 
+type SessionSynchronizeFailure = {
+  provider: LLMProvider;
+  reason: string;
+};
+
 type SessionSynchronizeResult = {
-  processedByProvider: Record<LLMProvider, number>;
-  failures: string[];
+  processedByProvider: Partial<Record<LLMProvider, number>>;
+  failures: SessionSynchronizeFailure[];
 };
 
 /**
@@ -12,42 +17,49 @@ type SessionSynchronizeResult = {
  */
 export const sessionSynchronizerService = {
   /**
-   * Runs all provider synchronizers and updates scan_state.last_scanned_at.
+   * Runs all provider synchronizers, each against its own scan cursor.
+   *
+   * Every provider reads and advances only its own `provider_scan_state` row,
+   * so a provider that fails leaves the others' cursors untouched and only
+   * rescans its own backlog next round. A provider with no row yet has no
+   * cursor to pass, which means a full scan for that provider alone.
    */
   async synchronizeSessions(): Promise<SessionSynchronizeResult> {
-    const lastScanAt = scanStateDb.getLastScannedAt();
     const scanBoundary = new Date();
-    const processedByProvider: Record<LLMProvider, number> = {
-      claude: 0,
-      codex: 0,
-      cursor: 0,
-      opencode: 0,
-      pi: 0,
-    };
-    const failures: string[] = [];
+    const processedByProvider: Partial<Record<LLMProvider, number>> = {};
+    const failures: SessionSynchronizeFailure[] = [];
 
-    const results = await Promise.allSettled(
-      providerRegistry.listProviders().map(async (provider) => ({
-        provider: provider.id,
-        processed: await provider.sessionSynchronizer.synchronize(lastScanAt ?? undefined),
-      }))
+    // Each task reports its own outcome instead of rejecting, so a failure
+    // keeps the provider id attached to its reason. A bare rejection loses it.
+    const results = await Promise.all(
+      providerRegistry.listProviders().map(async (provider) => {
+        try {
+          const lastScanAt = scanStateDb.getLastScannedAt(provider.id);
+          const processed = await provider.sessionSynchronizer.synchronize(lastScanAt ?? undefined);
+          scanStateDb.updateLastScannedAt(provider.id, scanBoundary);
+          return { provider: provider.id, processed, reason: null };
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          return { provider: provider.id, processed: null, reason };
+        }
+      })
     );
 
     for (const result of results) {
-      if (result.status === 'fulfilled') {
-        processedByProvider[result.value.provider] = result.value.processed;
+      if (result.reason === null) {
+        processedByProvider[result.provider] = result.processed ?? 0;
         continue;
       }
 
-      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
-      failures.push(reason);
+      failures.push({ provider: result.provider, reason: result.reason });
     }
 
-    if (failures.length === 0) {
-      scanStateDb.updateLastScannedAt(scanBoundary);
-    } else {
+    if (failures.length > 0) {
+      const failureSummary = failures
+        .map((failure) => `${failure.provider} (${failure.reason})`)
+        .join(', ');
       console.warn(
-        `[Sessions] Skipping scan_state cursor advance because ${failures.length} provider sync(s) failed.`,
+        `[Sessions] ${failures.length} provider sync(s) failed; only their own scan cursors stayed put: ${failureSummary}`,
       );
     }
 

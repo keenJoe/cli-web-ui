@@ -7,6 +7,7 @@ import type {
   CodexPermissionMode,
   SettingsProject,
 } from '../../../types/types';
+import type { ProviderMcpCapabilities } from '../../../../mcp/types';
 
 export type AgentContext = {
   authStatus: AuthStatus;
@@ -53,4 +54,9 @@ export type AgentCategoryContentSectionProps = {
   codexPermissionMode: CodexPermissionMode;
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
   projects: SettingsProject[];
+  permissionModes: string[];
+  defaultPermissionMode: string | null;
+  supportsMcp: boolean;
+  mcpCapabilities: ProviderMcpCapabilities | null;
+  supportsSkills: boolean;
 };

@@ -2,12 +2,12 @@ import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import spawn from 'cross-spawn';
-
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type { ProviderAuthStatus } from '@/shared/types.js';
-import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
+import { readObjectRecord, readOptionalString, runCliVersionProbe } from '@/shared/utils.js';
+
+import { readClaudeSettings } from './claude-settings.js';
 
 type ClaudeCredentialsStatus = {
   authenticated: boolean;
@@ -26,12 +26,7 @@ export class ClaudeProviderAuth implements IProviderAuth {
    */
   private checkInstalled(): boolean {
     const cliPath = resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH);
-    try {
-      spawn.sync(cliPath, ['--version'], { stdio: 'ignore', timeout: 5000 });
-      return true;
-    } catch {
-      return false;
-    }
+    return runCliVersionProbe(cliPath, ['--version']);
   }
 
   /**
@@ -65,13 +60,30 @@ export class ClaudeProviderAuth implements IProviderAuth {
 
   /**
    * Reads Claude settings env values that the CLI can use even when the server process env is empty.
+   *
+   * Delegates to `readClaudeSettings`, which only resolves a complete
+   * base_url + credential pair. Auth is deliberately looser: any credential in
+   * settings.json counts as authenticated even without a base_url, so an
+   * incomplete config falls back to reading the raw env block.
    */
   private async loadSettingsEnv(): Promise<Record<string, unknown>> {
+    const settings = await readClaudeSettings();
+    if (settings) {
+      const env: Record<string, unknown> = {};
+      if (settings.apiKey) {
+        env.ANTHROPIC_API_KEY = settings.apiKey;
+      }
+      if (settings.authToken) {
+        env.ANTHROPIC_AUTH_TOKEN = settings.authToken;
+      }
+      return env;
+    }
+
     try {
       const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
       const content = await readFile(settingsPath, 'utf8');
-      const settings = readObjectRecord(JSON.parse(content));
-      return readObjectRecord(settings?.env) ?? {};
+      const settingsFromFile = readObjectRecord(JSON.parse(content));
+      return readObjectRecord(settingsFromFile?.env) ?? {};
     } catch {
       return {};
     }

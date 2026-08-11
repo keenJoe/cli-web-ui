@@ -1,6 +1,8 @@
 import type { IncomingMessage } from 'node:http';
 import type { Readable } from 'node:stream';
 
+import type { ChatAttachmentDescriptor } from '@/shared/image-attachments.js';
+
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
  * Canonical success envelope used by backend APIs that return a structured payload.
@@ -278,11 +280,14 @@ export type NormalizedMessage = {
   [key: string]: unknown;
 };
 
+// ---------------------------
+//----------------- PROVIDER RUNTIME COMPATIBILITY TYPES ------------
 /**
- * Output gateway shared by WebSocket and SSE provider runs.
+ * Compatibility output gateway shared by WebSocket, SSE, and legacy runtimes.
  *
- * Runtime adapters only depend on this structural surface, which keeps them
- * independent from the transport that ultimately delivers normalized events.
+ * `providerRuntimeService` retains this surface while callers migrate to the
+ * typed coordinator. Concrete typed runtimes do not receive this writer;
+ * `ProviderRunCoordinator` alone forwards their events and outcome into it.
  */
 export type ProviderRuntimeWriter = {
   send(data: unknown): void;
@@ -321,6 +326,96 @@ export type ProviderRuntimeContext = {
   isProviderInstalled(): Promise<boolean>;
 };
 
+// ---------------------------
+//----------------- PROVIDER TYPED RUNTIME TYPES ------------
+/**
+ * Normalized provider event accepted from a typed runtime.
+ *
+ * `ProviderRunCoordinator` and `LegacyProviderRuntimeAdapter` consume this
+ * shape. Application-owned `complete` and native-identity `session_created`
+ * events are excluded at compile time; runtimes bind identity through
+ * `IProviderEventSink.bindProviderSession` instead.
+ */
+export type ProviderRunEvent = Omit<NormalizedMessage, 'kind'> & {
+  readonly kind: Exclude<MessageKind, 'complete' | 'session_created'>;
+};
+
+/**
+ * Tool and permission settings normalized for one provider run.
+ *
+ * `providerRuntimeService` projects current HTTP/WebSocket compatibility
+ * options into this shape, and legacy CLI adapters translate it back to their
+ * provider-native names during the staged runtime migration.
+ */
+export type ProviderRunToolSettings = {
+  readonly allowedTools?: readonly string[];
+  readonly disallowedTools?: readonly string[];
+  readonly allowedShellCommands?: readonly string[];
+  readonly skipPermissions?: boolean;
+};
+
+/**
+ * Immutable application request passed to every typed provider runtime.
+ *
+ * App-facing and provider-native session ids remain deliberately separate:
+ * transports/replay always use `appSessionId`, while providers resume only
+ * `providerSessionId`. The coordinator owns `runId` and supplies cancellation
+ * separately so request data cannot mutate lifecycle state.
+ */
+export type ProviderRunRequest = {
+  readonly runId: string;
+  readonly provider: LLMProvider;
+  readonly appSessionId: string;
+  readonly providerSessionId: string | null;
+  readonly command: string;
+  readonly cwd?: string;
+  readonly projectPath?: string;
+  readonly artifactPath?: string | null;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly permissionMode?: string;
+  readonly sessionSummary?: string;
+  readonly images?: readonly ChatAttachmentDescriptor[];
+  readonly files?: readonly ChatAttachmentDescriptor[];
+  readonly attachments?: readonly ChatAttachmentDescriptor[];
+  readonly toolsSettings?: ProviderRunToolSettings;
+  readonly skipPermissions?: boolean;
+  readonly userId: string | number | null;
+};
+
+/**
+ * Terminal result returned to `ProviderRunCoordinator` by one typed runtime.
+ *
+ * Runtimes return data only and never emit a terminal event. The coordinator
+ * converts exactly one outcome into the application `complete` message. A
+ * failed result may retain provider detail for logging, while `exitCode`
+ * drives the stable transport payload.
+ */
+export type ProviderRunOutcome =
+  | {
+    readonly status: 'completed';
+    readonly providerSessionId: string | null;
+    readonly exitCode: 0;
+  }
+  | {
+    readonly status: 'aborted';
+    readonly providerSessionId: string | null;
+    readonly exitCode: number;
+  }
+  | {
+    readonly status: 'failed';
+    readonly providerSessionId: string | null;
+    readonly exitCode: number;
+    readonly errorCode?: string;
+    readonly error?: unknown;
+  };
+
+// ---------------------------
+//----------------- PROVIDER LEGACY CALLER TYPE ------------
+/**
+ * Compatibility runner retained for the Git module and provider runtime tests.
+ * Agent HTTP dispatch now calls the generic runtime gateway directly.
+ */
 export type ProviderRunFunction = (
   command: string,
   options: AnyRecord,
@@ -472,6 +567,30 @@ export type ProviderSkillSource = {
   commandForSkill?: (skillName: string) => string;
   pluginName?: string;
   pluginId?: string;
+};
+
+// ---------------------------
+//----------------- NOTIFICATION DELIVERY TYPES ------------
+/**
+ * Normalized notification event passed from provider runtimes or Settings to
+ * the Notifications module.
+ *
+ * `provider` is either a registered LLM provider or `system` for application
+ * lifecycle messages. `sessionId` is always the stable app-facing id when one
+ * exists. `meta` carries code-specific display values; consumers must treat
+ * unrecognized keys as opaque. Delivery code may use `dedupeKey` within its
+ * bounded deduplication window but must not persist it as session identity.
+ */
+export type NotificationEvent = {
+  provider: LLMProvider | 'system';
+  sessionId: string | null;
+  kind: string;
+  code: string;
+  meta: Record<string, unknown>;
+  severity: string;
+  requiresUserAction: boolean;
+  dedupeKey: string | null;
+  createdAt: string;
 };
 
 // ---------------------------

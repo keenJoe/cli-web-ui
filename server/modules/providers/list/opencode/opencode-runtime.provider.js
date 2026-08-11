@@ -123,7 +123,10 @@ function readOpenCodeTokenUsage(sessionId) {
   }
 }
 
-async function spawnOpenCode(command, options = {}, ws, context) {
+/**
+ * Runs OpenCode with optional process-constructor overrides used by runtime regression tests.
+ */
+async function spawnOpenCode(command, options = {}, ws, context, runtimeDependencies = {}) {
   return new Promise((resolve, reject) => {
     const {
       sessionId,
@@ -134,7 +137,8 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       sessionSummary,
       images,
       files,
-      permissionMode
+      permissionMode,
+      signal
     } = options;
     // Callers pass the stable app session id; the CLI resumes with the
     // provider-native id recorded on the session row.
@@ -148,9 +152,12 @@ async function spawnOpenCode(command, options = {}, ws, context) {
     let stdoutLineBuffer = '';
     let terminalNotificationSent = false;
     let opencodeProcess = null;
-    // Unified lifecycle contract: exactly one terminal `complete` per run
-    // (close and error handlers can both fire for spawn failures).
-    let completeSent = false;
+
+    const removeProcessIfCurrent = (sessionKey) => {
+      if (activeOpenCodeProcesses.get(sessionKey) === opencodeProcess) {
+        activeOpenCodeProcesses.delete(sessionKey);
+      }
+    };
 
     const notifyTerminalState = ({ code = null, error = null } = {}) => {
       if (terminalNotificationSent) {
@@ -189,8 +196,10 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       // Legacy/direct callers without an app session id re-key the process
       // under the provider-native id once it is known.
       if (!sessionId && processKey !== capturedSessionId && opencodeProcess) {
-        activeOpenCodeProcesses.delete(processKey);
-        activeOpenCodeProcesses.set(capturedSessionId, opencodeProcess);
+        if (activeOpenCodeProcesses.get(processKey) === opencodeProcess) {
+          activeOpenCodeProcesses.delete(processKey);
+          activeOpenCodeProcesses.set(capturedSessionId, opencodeProcess);
+        }
       }
       if (opencodeProcess) {
         opencodeProcess.sessionId = capturedSessionId;
@@ -248,11 +257,20 @@ async function spawnOpenCode(command, options = {}, ws, context) {
     };
 
     void context.resolveResumeModel(sessionId, model).then(async (resolvedModel) => {
+      if (signal?.aborted) {
+        resolve();
+        return;
+      }
+
       let effortModels = null;
       try {
         effortModels = await context.getProviderModels();
       } catch (error) {
         console.warn('[OpenCode] Unable to load provider models for effort validation:', error);
+      }
+      if (signal?.aborted) {
+        resolve();
+        return;
       }
 
       const resolvedEffort = resolveOpenCodeEffort(resolvedModel, effort, effortModels);
@@ -287,7 +305,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         args.push(flattenPromptForWindowsShell(promptWithAttachments));
       }
 
-      opencodeProcess = spawnFunction('opencode', args, {
+      opencodeProcess = (runtimeDependencies.spawn || spawnFunction)('opencode', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, ...permissionOptions.env },
@@ -323,8 +341,8 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       opencodeProcess.on('close', async (code) => {
         const finalSessionId = sessionId || capturedSessionId || processKey;
-        activeOpenCodeProcesses.delete(finalSessionId);
-        activeOpenCodeProcesses.delete(processKey);
+        removeProcessIfCurrent(finalSessionId);
+        removeProcessIfCurrent(processKey);
 
         if (stdoutLineBuffer.trim()) {
           processOpenCodeOutputLine(stdoutLineBuffer.trim());
@@ -343,12 +361,8 @@ async function spawnOpenCode(command, options = {}, ws, context) {
           }));
         }
 
-        // Terminal complete — skipped for aborted runs (abort-session
-        // already sent the aborted complete on this run's behalf).
-        if (!completeSent && !opencodeProcess.aborted) {
-          completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: code }));
-        }
+        // The adapter owns first-wins terminal interpretation for close/error races.
+        ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: code }));
 
         if (code === 0) {
           notifyTerminalState({ code });
@@ -374,8 +388,8 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       opencodeProcess.on('error', async (error) => {
         const finalSessionId = sessionId || capturedSessionId || processKey;
-        activeOpenCodeProcesses.delete(finalSessionId);
-        activeOpenCodeProcesses.delete(processKey);
+        removeProcessIfCurrent(finalSessionId);
+        removeProcessIfCurrent(processKey);
 
         const installed = await context.isProviderInstalled();
         const errorContent = !installed
@@ -388,10 +402,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
           sessionId: finalSessionId,
           provider: 'opencode',
         }));
-        if (!completeSent && !opencodeProcess.aborted) {
-          completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: 1 }));
-        }
+        ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: 1 }));
         notifyTerminalState({ error });
         reject(error);
       });
@@ -405,11 +416,10 @@ function abortOpenCodeSession(sessionId) {
     return false;
   }
 
-  // The abort handler sends the terminal complete (aborted: true); flag the
-  // process so its close handler does not emit a second one.
-  process.aborted = true;
   process.kill('SIGTERM');
-  activeOpenCodeProcesses.delete(sessionId);
+  if (activeOpenCodeProcesses.get(sessionId) === process) {
+    activeOpenCodeProcesses.delete(sessionId);
+  }
   return true;
 }
 

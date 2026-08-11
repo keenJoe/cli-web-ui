@@ -2,6 +2,7 @@ import { memo, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
+import { getProviderBrand } from '../../../llm-logo-provider/providerBranding';
 import type {
   ChatMessage,
   ClaudePermissionSuggestion,
@@ -74,6 +75,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 
   const formattedTime = useMemo(() => new Date(message.timestamp).toLocaleTimeString(), [message.timestamp]);
   const shouldHideThinkingMessage = Boolean(message.isThinking && !showThinking);
+  const providerMessageLabel = getProviderBrand(provider).messageLabel;
 
   if (shouldHideThinkingMessage) {
     return null;
@@ -122,11 +124,13 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               </div>
             )}
           </div>
-          {!isGrouped && (
-            <div className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm text-white sm:flex">
-              U
-            </div>
-          )}
+          {/* Keep the avatar slot in place so the bubble edge stays aligned on every turn. */}
+          <div
+            aria-hidden="true"
+            className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm text-white sm:flex"
+          >
+            U
+          </div>
         </div>
       ) : message.isTaskNotification ? (
         /* Compact task notification on the left */
@@ -159,15 +163,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   ? t('messageTypes.error')
                   : message.type === 'tool'
                     ? t('messageTypes.tool')
-                    : (provider === 'cursor'
-                        ? t('messageTypes.cursor')
-                        : provider === 'codex'
-                          ? t('messageTypes.codex')
-                          : provider === 'opencode'
-                              ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-                              : provider === 'pi'
-                                  ? t('messageTypes.pi', { defaultValue: 'Pi' })
-                              : t('messageTypes.claude'))}
+                    : t(providerMessageLabel.key, {
+                        defaultValue: providerMessageLabel.defaultValue,
+                      })}
               </div>
             </div>
           )}

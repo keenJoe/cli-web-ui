@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import {
   access,
@@ -16,6 +16,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
+import spawn from 'cross-spawn';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
 import { parseFrontMatter } from '@/shared/frontmatter.js';
@@ -347,10 +348,11 @@ export function createNormalizedMessage(fields: NormalizedMessageInput): Normali
 /**
  * Build the unified terminal `complete` lifecycle message.
  *
- * Contract: every provider run ends with exactly one `complete` (the
- * abort-session handler emits it on behalf of cancelled runs, so aborted runs
- * must NOT emit their own). The frontend treats `complete` as the only
- * terminal signal and never needs provider-specific handling:
+ * Contract: `ProviderRunCoordinator` creates exactly one transport-visible
+ * `complete` for every provider run, including accepted aborts. Runtimes emit
+ * only non-terminal events and return an outcome. The frontend treats
+ * `complete` as the only terminal signal and never needs provider-specific
+ * handling:
  *
  * - `sessionId`     — the id the client knows this run by ('' if never discovered)
  * - `actualSessionId` — canonical id after the run; equals `sessionId` unless
@@ -496,6 +498,23 @@ export const readStringRecord = (value: unknown): Record<string, string> | undef
 };
 
 // ---------------------------
+//----------------- PROVIDER TOKEN-USAGE NUMBER UTILITIES ------------
+/**
+ * Coerces one provider-native token-usage field to a finite number.
+ *
+ * The Claude, Codex, and OpenCode usage facets use this helper when reading
+ * loosely typed JSONL or SQLite values. It deliberately preserves JavaScript
+ * `Number` coercion for finite inputs, including numeric strings, while mapping
+ * missing, malformed, `NaN`, and infinite values to `0`. This is a narrow
+ * parsing fallback, not domain validation: finite negative or fractional values
+ * remain unchanged so adapters do not silently rewrite provider-owned data.
+ */
+export function readFiniteUsageNumber(value: unknown): number {
+  const parsedValue = Number(value);
+  return Number.isFinite(parsedValue) ? parsedValue : 0;
+}
+
+// ---------------------------
 //----------------- PROVIDER MODEL LOOKUP UTILITIES ------------
 /**
  * Builds the standard "default current model" result used when a provider
@@ -511,6 +530,175 @@ export function buildDefaultProviderCurrentActiveModel(
   return {
     model: models.DEFAULT,
   };
+}
+
+// ---------------------------
+//----------------- PROVIDER MODELS HTTP FETCH UTILITIES ------------
+/**
+ * One parsed model row from a provider `/v1/models` response.
+ *
+ * `value` is the provider model id (`data[].id`) and `label` is the human-facing
+ * name (`data[].display_name`) with the id as fallback, since OpenAI-compatible
+ * endpoints usually omit `display_name`.
+ */
+export type FetchedModelOption = {
+  value: string;
+  label: string;
+};
+
+const MODELS_FETCH_TIMEOUT_MS = 8000;
+
+/**
+ * Computes the cache identity for a configuration-driven model catalog.
+ *
+ * The fingerprint hashes the full configuration (base_url, credential,
+ * model_provider, configured model) so any single change invalidates the old
+ * catalog cache entry. The raw credential is never used verbatim: it is hashed
+ * first, so only hash material reaches the persisted cache. An empty
+ * configuration yields an empty fingerprint, which keeps the unconfigured
+ * cache key equivalent to the previous provider-only key.
+ */
+export function computeModelsFingerprint(config: {
+  baseUrl?: string;
+  credential?: string;
+  modelProvider?: string;
+  model?: string;
+}): string {
+  const baseUrl = config.baseUrl?.trim() || '';
+  const credential = config.credential?.trim() || '';
+  const modelProvider = config.modelProvider?.trim() || '';
+  const model = config.model?.trim() || '';
+
+  if (!baseUrl && !credential && !modelProvider && !model) {
+    return '';
+  }
+
+  const credentialHash = createHash('sha256').update(credential).digest('hex');
+  return createHash('sha256')
+    .update(`${baseUrl}\n${credentialHash}\n${modelProvider}\n${model}`)
+    .digest('hex');
+}
+
+/**
+ * Normalizes a provider base URL into the OpenAI-style models endpoint.
+ *
+ * Trailing slashes and a trailing `/v1` are stripped before appending
+ * `/v1/models`, so a base_url that already ends in `/v1` never produces a
+ * duplicated `/v1/v1/models` segment. Blank input returns `null`.
+ */
+export function normalizeModelsEndpoint(baseUrl: string): string | null {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const withoutTrailingSlash = trimmed.replace(/\/+$/, '');
+  const root = withoutTrailingSlash.replace(/\/v1$/, '');
+  return `${root}/v1/models`;
+}
+
+/**
+ * Parses a provider `/v1/models` payload into selectable model options.
+ *
+ * Only entries with a string `id` are kept; the `display_name` (when present)
+ * becomes the label. A payload without a `data` array returns `null` so callers
+ * can treat malformed responses as fetch failures.
+ */
+const parseModelsResponsePayload = (payload: unknown): FetchedModelOption[] | null => {
+  const record = readObjectRecord(payload);
+  const data = Array.isArray(record?.data) ? record.data : null;
+  if (!data) {
+    return null;
+  }
+
+  const options: FetchedModelOption[] = [];
+  for (const item of data) {
+    const entry = readObjectRecord(item);
+    if (!entry) {
+      continue;
+    }
+
+    const id = readOptionalString(entry.id);
+    if (!id) {
+      continue;
+    }
+
+    options.push({
+      value: id,
+      label: readOptionalString(entry.display_name) ?? id,
+    });
+  }
+
+  return options;
+};
+
+/**
+ * Runs one `GET {url}` models request with an ~8s abort timeout.
+ *
+ * Any failure — timeout, network error, non-2xx status, or a body that cannot
+ * be parsed into a model list — returns `null` instead of throwing, so config
+ * driven catalog lookup can fall back to built-in lists.
+ */
+const fetchModelsEndpoint = async (
+  url: string,
+  headers: Record<string, string>,
+): Promise<FetchedModelOption[] | null> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MODELS_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { headers, signal: controller.signal });
+    if (!response.ok) {
+      return null;
+    }
+
+    return parseModelsResponsePayload(await response.json());
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+/**
+ * Fetches an Anthropic-protocol `/v1/models` catalog.
+ *
+ * Sends `x-api-key` when `apiKey` is present and `Authorization: Bearer` when
+ * `authToken` is present (the auth token wins), plus the Anthropic API version
+ * header in both cases. Returns `null` on any failure instead of throwing.
+ */
+export async function fetchAnthropicModels(
+  baseUrl: string,
+  apiKey?: string,
+  authToken?: string,
+): Promise<FetchedModelOption[] | null> {
+  const headers: Record<string, string> = { 'anthropic-version': '2023-06-01' };
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
+  } else {
+    headers['x-api-key'] = apiKey ?? '';
+  }
+
+  return fetchModelsEndpoint(`${baseUrl}/v1/models`, headers);
+}
+
+/**
+ * Fetches an OpenAI-compatible `/v1/models` catalog.
+ *
+ * Sends the credential as a `Authorization: Bearer` header. Returns `null` on
+ * any failure instead of throwing.
+ */
+export async function fetchOpenAICompatModels(
+  baseUrl: string,
+  token: string,
+): Promise<FetchedModelOption[] | null> {
+  const endpoint = normalizeModelsEndpoint(baseUrl);
+  if (!endpoint) {
+    return null;
+  }
+
+  return fetchModelsEndpoint(endpoint, {
+    Authorization: `Bearer ${token}`,
+  });
 }
 
 // ---------------------------
@@ -1148,4 +1336,29 @@ export function findApplicationRoot(startDirectory: string): string {
   return path.basename(parentDirectory) === 'dist-server'
     ? path.dirname(parentDirectory)
     : parentDirectory;
+}
+
+// ---------------------------
+//----------------- CLI INSTALL PROBE UTILITIES ------------
+/**
+ * Runs a CLI version probe and reports whether the binary actually launched.
+ *
+ * `spawn.sync` does not throw when the binary is missing: an ENOENT failure
+ * comes back as an `error` field on the result, so treating a successful spawn
+ * as "installed" misreports missing CLIs. This helper returns `false` for any
+ * failure mode — a spawn error (e.g. ENOENT), a non-zero exit status, or a
+ * killed/terminated process (`signal`, which `spawn.sync` surfaces when its
+ * `timeout` elapses).
+ */
+export function runCliVersionProbe(bin: string, args: string[]): boolean {
+  const result = spawn.sync(bin, args, { stdio: 'ignore', timeout: 5000 });
+  if (result.error) {
+    return false;
+  }
+
+  if (result.signal) {
+    return false;
+  }
+
+  return result.status === 0;
 }

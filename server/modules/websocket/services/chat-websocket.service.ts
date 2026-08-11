@@ -3,7 +3,6 @@ import path from 'node:path';
 import type { WebSocket } from 'ws';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { providerModelsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import {
@@ -193,12 +192,6 @@ async function handleChatSend(
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
 
-  // Record what this turn runs with so reopening the session later restores the
-  // same model, and so the resume path has a session-scoped answer to use.
-  if (typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
-    providerModelsService.setSessionModel(provider, sessionId, clientOptions.model);
-  }
-
   const attachmentCandidates = [
     ...normalizeAttachmentDescriptors(clientOptions.images),
     ...normalizeAttachmentDescriptors(clientOptions.files),
@@ -209,12 +202,10 @@ async function handleChatSend(
     (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
   );
 
-  // The provider runtimes receive the stable app session id. When their
-  // CLI/SDK needs the provider-native id for resume, they resolve it from the
-  // session row themselves (sessionsService.resolveProviderSessionId).
-  // Brand-new sessions have no provider id yet, so the runtime starts fresh
-  // and announces one, which the gateway writer captures and maps back to the
-  // app session id.
+  // Stable app identity and provider-native resume identity both come from the
+  // trusted session row. Client options must never choose or clear a native id.
+  // Brand-new rows carry null, so the runtime starts fresh and the coordinator
+  // persists the first binding before the gateway exposes it.
   const runtimeOptions: AnyRecord = {
     ...clientOptions,
     // Attachments are re-validated server-side: only direct children of the
@@ -223,6 +214,7 @@ async function handleChatSend(
     images: uniqueAttachments.filter(isImageAttachmentDescriptor),
     files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
     sessionId,
+    providerSessionId: session.provider_session_id,
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
   };
@@ -233,9 +225,9 @@ async function handleChatSend(
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: message });
   } finally {
-    // Safety net: a runtime that crashed (or resolved) without emitting its
-    // terminal `complete` would otherwise leave the session stuck in
-    // "processing" forever on every connected client. Scoped to THIS run —
+    // Safety net: if the coordinator/gateway terminal projection is missing,
+    // the session would otherwise remain stuck in "processing" on every
+    // connected client. Scoped to THIS run —
     // a queued message can start the session's next run before this promise
     // settles, and the session-keyed completeRun would kill that new run.
     chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1 });
@@ -243,9 +235,9 @@ async function handleChatSend(
 }
 
 /**
- * Handles `chat.abort`: cancels the run for one app session and emits the
- * terminal `complete` on its behalf (runtimes skip their own complete for
- * aborted runs, and the registry drops any duplicate).
+ * Handles `chat.abort`: delegates cancellation and terminal ownership to the
+ * coordinator by app session id. The registry completion call is a first-wins
+ * compatibility fallback and is a no-op once the coordinator projected terminal.
  */
 async function handleChatAbort(
   ws: WebSocket,

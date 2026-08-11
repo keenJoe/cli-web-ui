@@ -12,10 +12,17 @@ import cors from 'cors';
 import { AppError, findApplicationRoot, getModuleDirectory, terminalTextStyles } from '@/shared/utils.js';
 import {
     closeSessionsWatcher,
+    configureSessionChangePublisher,
+    configureSessionRunStateReader,
     initializeSessionsWatcher,
+    providerRegistry,
     providerRuntimeService,
 } from '@/modules/providers/index.js';
-import { createWebSocketServer } from '@/modules/websocket/index.js';
+import {
+    createWebSocketServer,
+    webSocketSessionChangePublisher,
+    webSocketSessionRunStateReader,
+} from '@/modules/websocket/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
@@ -81,20 +88,11 @@ const app = express();
 const server = http.createServer(app);
 const queryClaude = providerRuntimeService.getRunner('claude');
 const queryCursor = providerRuntimeService.getRunner('cursor');
-const queryCodex = providerRuntimeService.getRunner('codex');
-const queryOpenCode = providerRuntimeService.getRunner('opencode');
-const queryPi = providerRuntimeService.getRunner('pi');
 const gitRoutes = createGitModule({
     queryClaude,
     queryCursor,
 });
-const agentRoutes = createAgentModule({
-    queryClaude,
-    queryCursor,
-    queryCodex,
-    queryOpenCode,
-    queryPi,
-});
+const agentRoutes = createAgentModule(providerRuntimeService);
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 const wss = createWebSocketServer(server, {
@@ -117,6 +115,11 @@ const wss = createWebSocketServer(server, {
     },
     getPluginPort,
 });
+
+// The assembly root binds application-owned session ports to the WebSocket
+// transport. Providers depend only on these ports and never on transport state.
+configureSessionChangePublisher(webSocketSessionChangePublisher);
+configureSessionRunStateReader(webSocketSessionRunStateReader);
 
 // Make WebSocket server available to routes
 app.locals.wss = wss;
@@ -327,8 +330,10 @@ async function removeLocalServerMarker() {
 // Initialize database and start server
 async function startServer() {
     try {
-        // Initialize authentication database
-        await initializeDatabase();
+        // Initialize authentication database. The registered provider ids come
+        // from the assembly root because the scan-cursor seeding migration needs
+        // them and the database layer must not depend on the provider registry.
+        await initializeDatabase(providerRegistry.listProviders().map((provider) => provider.id));
 
         // Configure Web Push (VAPID keys)
         configureWebPush();

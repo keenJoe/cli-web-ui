@@ -1,6 +1,7 @@
 import { ActivityIcon } from 'lucide-react';
 
 type TokenUsageSummaryProps = {
+  supported: boolean;
   usage: Record<string, unknown> | null;
   onClick?: () => void;
 };
@@ -30,7 +31,11 @@ const readUsageNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-export default function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
+export default function TokenUsageSummary({ supported, usage, onClick }: TokenUsageSummaryProps) {
+  if (!supported) {
+    return null;
+  }
+
   const breakdown =
     usage?.breakdown && typeof usage.breakdown === 'object'
       ? usage.breakdown as Record<string, unknown>

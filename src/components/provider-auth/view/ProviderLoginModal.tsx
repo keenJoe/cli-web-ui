@@ -1,7 +1,8 @@
 import { X } from 'lucide-react';
 
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
-import { DEFAULT_PROJECT_FOR_EMPTY_SHELL, IS_PLATFORM } from '../../../constants/config';
+import { getProviderBrand } from '../../llm-logo-provider/providerBranding';
+import { DEFAULT_PROJECT_FOR_EMPTY_SHELL } from '../../../constants/config';
 import type { LLMProvider } from '../../../types/app';
 
 type ProviderLoginModalProps = {
@@ -16,46 +17,12 @@ type ProviderLoginModalProps = {
 const getProviderCommand = ({
   provider,
   customCommand,
-  isAuthenticated: _isAuthenticated,
 }: {
   provider: LLMProvider;
   customCommand?: string;
   isAuthenticated: boolean;
 }) => {
-  if (customCommand) {
-    return customCommand;
-  }
-
-  if (provider === 'claude') {
-    return 'claude --dangerously-skip-permissions /login';
-  }
-
-  if (provider === 'cursor') {
-    return 'cursor-agent login';
-  }
-
-  if (provider === 'codex') {
-    return IS_PLATFORM ? 'codex login --device-auth' : 'codex login';
-  }
-
-  if (provider === 'opencode') {
-    return 'opencode auth login';
-  }
-
-  if (provider === 'pi') {
-    return 'pi';
-  }
-
-  return 'claude --dangerously-skip-permissions /login';
-};
-
-const getProviderTitle = (provider: LLMProvider) => {
-  if (provider === 'claude') return 'Claude CLI Login';
-  if (provider === 'cursor') return 'Cursor CLI Login';
-  if (provider === 'codex') return 'Codex CLI Login';
-  if (provider === 'opencode') return 'OpenCode CLI Login';
-  if (provider === 'pi') return 'Pi CLI';
-  return 'Claude CLI Login';
+  return customCommand || getProviderBrand(provider).login.command;
 };
 
 export default function ProviderLoginModal({
@@ -71,7 +38,7 @@ export default function ProviderLoginModal({
   }
 
   const command = getProviderCommand({ provider, customCommand, isAuthenticated });
-  const title = getProviderTitle(provider);
+  const title = getProviderBrand(provider).login.title;
 
   const handleComplete = (exitCode: number) => {
     onComplete?.(exitCode);

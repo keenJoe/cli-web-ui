@@ -194,9 +194,14 @@ export const api = {
   getArchivedSessions: () =>
     authenticatedFetch('/api/providers/sessions/archived'),
   // Resolves one session (by app id or provider-native id) to its metadata and
-  // owning project — used when a /session/<id> URL isn't in loaded payloads.
-  sessionDetails: (sessionId) =>
-    authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}`),
+  // owning project. Provider-native ids are only unique within one provider,
+  // so the deep-link fallback always sends the explicitly selected provider.
+  sessionDetails: (sessionId, provider) => {
+    const params = new URLSearchParams({ provider });
+    return authenticatedFetch(
+      `/api/providers/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`,
+    );
+  },
   runningSessions: () =>
     authenticatedFetch('/api/providers/sessions/running'),
   providerSessionId: (sessionId) =>

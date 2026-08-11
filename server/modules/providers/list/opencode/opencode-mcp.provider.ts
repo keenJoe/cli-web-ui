@@ -123,9 +123,15 @@ const resolveOpenCodeConfigPath = async (scope: McpScope, workspacePath: string)
   return { filePath: jsonPath, exists: false };
 };
 
+/** OpenCodeProvider uses this facet to read and persist OpenCode MCP server configuration. */
 export class OpenCodeMcpProvider extends McpProvider {
   constructor() {
-    super('opencode', ['user', 'project'], ['stdio', 'http']);
+    super('opencode', {
+      supportedScopes: ['user', 'project'],
+      supportedTransports: ['stdio', 'http'],
+      supportsWorkingDirectory: false,
+      supportsEnvironmentVariableReferences: false,
+    });
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

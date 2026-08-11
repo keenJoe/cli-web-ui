@@ -1,4 +1,8 @@
-export type LLMProvider = 'claude' | 'cursor' | 'codex' | 'opencode' | 'pi';
+import type { LLMProvider } from '../components/llm-logo-provider/providerBranding';
+
+export type { LLMProvider };
+
+export type ProviderCapabilityStatus = 'loading' | 'ready' | 'error';
 
 export type ProviderModelOption = {
   value: string;

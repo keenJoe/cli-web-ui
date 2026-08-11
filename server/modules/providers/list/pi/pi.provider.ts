@@ -1,6 +1,6 @@
 /**
- * PiProvider - assembles the Pi integration's eight facets behind one
- * registry-owned object (see AbstractProvider / IProvider).
+ * PiProvider - assembles the Pi integration's supported facets and descriptor
+ * behind one registry-owned object (see AbstractProvider / ProviderDefinition).
  *
  * Facets that left an injection seam are wired here to a real PiRpcClient:
  * - models: `withProbe` spawns a PiRpcClient, runs the catalog probe, then
@@ -11,12 +11,13 @@
 import { AbstractProvider } from '@/modules/providers/shared/base/abstract.provider.js';
 import type {
   IProviderAuth,
-  IProviderMcp,
   IProviderModels,
   IProviderRuntime,
   IProviderSessionSynchronizer,
   IProviderSkills,
   IProviderSessions,
+  IProviderUsage,
+  ProviderDescriptor,
 } from '@/shared/interfaces.js';
 
 import { PiAuthProvider } from './pi-auth.provider.js';
@@ -25,12 +26,12 @@ import {
   type PiModelsProbe,
   type PiModelsRpc,
 } from './pi-models.provider.js';
-import { PiMcpProvider } from './pi-mcp.provider.js';
 import { PiRpcClient } from './pi-rpc-client.provider.js';
 import { piRuntime } from './pi-runtime.provider.js';
 import { PiSessionSynchronizer } from './pi-session-synchronizer.provider.js';
 import { PiSessionsProvider } from './pi-sessions.provider.js';
 import { PiSkillsProvider } from './pi-skills.provider.js';
+import { PiTokenUsageProvider } from './pi-token-usage.provider.js';
 
 const MODELS_PROBE_GRACE_MS = 5000;
 
@@ -54,12 +55,22 @@ const piModelsRpc: PiModelsRpc = {
   },
 };
 
+/** Provider aggregate registered by ProviderRegistry for Pi capabilities and facets. */
 export class PiProvider extends AbstractProvider {
+  readonly descriptor: ProviderDescriptor = {
+    permissionModes: ['plan', 'bypassPermissions'],
+    defaultPermissionMode: 'bypassPermissions',
+    supportsImages: true,
+    supportsFiles: true,
+    supportsAbort: true,
+    supportsPermissionRequests: false,
+    supportsEffort: true,
+  };
   readonly runtime: IProviderRuntime = piRuntime;
   readonly models: IProviderModels = new PiModelsProvider(piModelsRpc);
-  readonly mcp: IProviderMcp = new PiMcpProvider();
   readonly auth: IProviderAuth = new PiAuthProvider();
   readonly skills: IProviderSkills = new PiSkillsProvider();
+  readonly usage: IProviderUsage = new PiTokenUsageProvider();
   readonly sessions: IProviderSessions = new PiSessionsProvider();
   readonly sessionSynchronizer: IProviderSessionSynchronizer = new PiSessionSynchronizer();
 

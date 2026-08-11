@@ -222,8 +222,10 @@ function mapPermissionModeToCodexOptions(permissionMode) {
  * @param {string} command - The prompt to send
  * @param {object} options - Options including cwd, sessionId, model, permissionMode
  * @param {WebSocket|object} ws - WebSocket connection or response writer
+ * @param {object} context - Provider-scoped model, session, and auth lookups
+ * @param {object} runtimeDependencies - SDK constructor overrides used by runtime regression tests
  */
-export async function queryCodex(command, options = {}, ws, context) {
+export async function queryCodex(command, options = {}, ws, context, runtimeDependencies = {}) {
   const {
     sessionId,
     sessionSummary,
@@ -233,6 +235,7 @@ export async function queryCodex(command, options = {}, ws, context) {
     effort,
     images,
     files,
+    signal,
     permissionMode = 'default'
   } = options;
 
@@ -241,15 +244,30 @@ export async function queryCodex(command, options = {}, ws, context) {
   const providerSessionId = context.resolveProviderSessionId(sessionId);
 
   const resolvedModel = await context.resolveResumeModel(sessionId, model);
+  if (signal?.aborted) {
+    return;
+  }
 
   const workingDirectory = cwd || projectPath || process.cwd();
   const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
   const catalog = await context.getProviderModels();
+  if (signal?.aborted) {
+    return;
+  }
   const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
   const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
-  const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
+  const catalogDefaultEffort = selectedModel?.effort?.default;
+  // Codex otherwise inherits the global model_reasoning_effort setting. That
+  // setting can be valid for the configured model but rejected by a model the
+  // user selected in the composer, so prefer the selected model's catalog
+  // default whenever the caller did not provide a supported effort.
+  const resolvedEffort = typeof effort === 'string'
+    && effort !== 'default'
+    && allowedEfforts.includes(effort)
     ? effort
-    : undefined;
+    : typeof catalogDefaultEffort === 'string' && allowedEfforts.includes(catalogDefaultEffort)
+      ? catalogDefaultEffort
+      : undefined;
 
   let codex;
   let thread;
@@ -264,7 +282,7 @@ export async function queryCodex(command, options = {}, ws, context) {
   const sessionKey = () => sessionId || capturedSessionId || null;
 
   try {
-    codex = new Codex();
+    codex = runtimeDependencies.createCodex?.() || new Codex();
 
     const threadOptions = {
       workingDirectory,
@@ -288,7 +306,6 @@ export async function queryCodex(command, options = {}, ws, context) {
       activeCodexSessions.set(id, {
         thread,
         codex,
-        status: 'running',
         abortController,
         startedAt: new Date().toISOString()
       });
@@ -331,12 +348,6 @@ export async function queryCodex(command, options = {}, ws, context) {
       if (abortController.signal.aborted) {
         break;
       }
-      if (sessionKey()) {
-        const session = activeCodexSessions.get(sessionKey());
-        if (session?.status === 'aborted') {
-          break;
-        }
-      }
 
       if (event.type === 'item.started' || event.type === 'item.updated') {
         continue;
@@ -371,10 +382,10 @@ export async function queryCodex(command, options = {}, ws, context) {
       }
     }
 
-    // Send the terminal completion event — skipped for aborted runs, whose
-    // terminal `complete` (aborted: true) was already sent by abort-session.
-    const runSession = sessionKey() ? activeCodexSessions.get(sessionKey()) : null;
-    const runAborted = runSession?.status === 'aborted' || abortController.signal.aborted;
+    // Preserve the legacy completion signal for non-aborted runs. The adapter
+    // strips it and returns the outcome to ProviderRunCoordinator, which owns
+    // the only transport-visible terminal, including the aborted case.
+    const runAborted = abortController.signal.aborted;
     if (!runAborted) {
       sendMessage(ws, createCompleteMessage({
         provider: 'codex',
@@ -394,9 +405,8 @@ export async function queryCodex(command, options = {}, ws, context) {
     }
 
   } catch (error) {
-    const session = sessionKey() ? activeCodexSessions.get(sessionKey()) : null;
     const wasAborted =
-      session?.status === 'aborted' ||
+      abortController.signal.aborted ||
       error?.name === 'AbortError' ||
       String(error?.message || '').toLowerCase().includes('aborted');
 
@@ -427,11 +437,10 @@ export async function queryCodex(command, options = {}, ws, context) {
     }
 
   } finally {
-    // Update session status
     if (sessionKey()) {
       const session = activeCodexSessions.get(sessionKey());
-      if (session) {
-        session.status = session.status === 'aborted' ? 'aborted' : 'completed';
+      if (session?.abortController === abortController) {
+        activeCodexSessions.delete(sessionKey());
       }
     }
   }
@@ -449,7 +458,6 @@ export function abortCodexSession(sessionId) {
     return false;
   }
 
-  session.status = 'aborted';
   try {
     session.abortController?.abort();
   } catch (error) {
@@ -465,8 +473,7 @@ export function abortCodexSession(sessionId) {
  * @returns {boolean} - Whether session is active
  */
 export function isCodexSessionActive(sessionId) {
-  const session = activeCodexSessions.get(sessionId);
-  return session?.status === 'running';
+  return activeCodexSessions.has(sessionId);
 }
 
 /**
@@ -477,13 +484,11 @@ export function getActiveCodexSessions() {
   const sessions = [];
 
   for (const [id, session] of activeCodexSessions.entries()) {
-    if (session.status === 'running') {
-      sessions.push({
-        id,
-        status: session.status,
-        startedAt: session.startedAt
-      });
-    }
+    sessions.push({
+      id,
+      status: 'running',
+      startedAt: session.startedAt
+    });
   }
 
   return sessions;
@@ -512,22 +517,3 @@ function sendMessage(ws, data) {
     console.error('[Codex] Error sending message:', error);
   }
 }
-
-// Clean up old completed sessions periodically
-const completedSessionCleanupTimer = setInterval(() => {
-  const now = Date.now();
-  const maxAge = 30 * 60 * 1000; // 30 minutes
-
-  for (const [id, session] of activeCodexSessions.entries()) {
-    if (session.status !== 'running') {
-      const startedAt = new Date(session.startedAt).getTime();
-      if (now - startedAt > maxAge) {
-        activeCodexSessions.delete(id);
-      }
-    }
-  }
-}, 5 * 60 * 1000); // Every 5 minutes
-
-// Runtime cleanup should not keep focused tests or one-off scripts alive after
-// their provider work has completed.
-completedSessionCleanupTimer.unref?.();

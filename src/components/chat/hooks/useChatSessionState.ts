@@ -12,6 +12,7 @@ import { normalizedToChatMessages } from './useChatMessages';
 
 const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
+const EMPTY_NORMALIZED_MESSAGES: NormalizedMessage[] = [];
 
 interface UseChatSessionStateArgs {
   selectedProject: Project | null;
@@ -28,6 +29,7 @@ interface UseChatSessionStateArgs {
   /** Highest live seq observed per session; sent as `lastSeq` on subscribe. */
   lastSeqRef: MutableRefObject<Map<string, number>>;
   sessionStore: SessionStore;
+  supportsTokenUsage: boolean;
 }
 
 interface ScrollRestoreState {
@@ -107,10 +109,14 @@ export function useChatSessionState({
   statusCheckSentAtRef,
   lastSeqRef,
   sessionStore,
+  supportsTokenUsage,
 }: UseChatSessionStateArgs) {
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
+  const selectedSessionId = selectedSession?.id ?? null;
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSessionId);
+  const currentSessionIdRef = useRef(currentSessionId);
+  currentSessionIdRef.current = currentSessionId;
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
-  const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
+  const isLoadingMoreMessages = false;
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
@@ -126,7 +132,6 @@ export function useChatSessionState({
   const wasNearTopRef = useRef(false);
   const [searchTarget, setSearchTarget] = useState<{ timestamp?: string; uuid?: string; snippet?: string } | null>(null);
   const searchScrollActiveRef = useRef(false);
-  const isLoadingSessionRef = useRef(false);
   const isLoadingMoreRef = useRef(false);
   const allMessagesLoadedRef = useRef(false);
   const topLoadLockRef = useRef(false);
@@ -137,6 +142,7 @@ export function useChatSessionState({
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
+  const sessionLoadGenerationRef = useRef(0);
   /**
    * Tracks the last processed value from `useProjectsState.newSessionTrigger`.
    *
@@ -261,7 +267,9 @@ export function useChatSessionState({
     setPendingUserMessage(null);
   }, [activeSessionId, pendingUserMessage, sessionStore]);
 
-  const storeMessages = activeSessionId ? sessionStore.getMessages(activeSessionId) : [];
+  const storeMessages = activeSessionId
+    ? sessionStore.getMessages(activeSessionId)
+    : EMPTY_NORMALIZED_MESSAGES;
 
   // Reset viewHiddenCount when store messages change
   const prevStoreLenRef = useRef(0);
@@ -272,13 +280,14 @@ export function useChatSessionState({
 
   const chatMessages = useMemo(() => {
     const all = normalizedToChatMessages(storeMessages);
-    // Show pending user message when no session data exists yet (new session, pre-backend-response)
     if (pendingUserMessage && all.length === 0) {
       return [pendingUserMessage];
     }
-    if (viewHiddenCount > 0 && viewHiddenCount < all.length) return all.slice(0, -viewHiddenCount);
+    if (viewHiddenCount > 0 && viewHiddenCount < all.length) {
+      return all.slice(0, -viewHiddenCount);
+    }
     return all;
-  }, [storeMessages, viewHiddenCount, pendingUserMessage]);
+  }, [pendingUserMessage, storeMessages, viewHiddenCount]);
 
   /* ---------------------------------------------------------------- */
   /*  addMessage / clearMessages / rewindMessages                     */
@@ -478,11 +487,16 @@ export function useChatSessionState({
 
   // Main session loading effect — store-based
   useEffect(() => {
-    if (!selectedSession || !selectedProject) {
+    const loadGeneration = sessionLoadGenerationRef.current + 1;
+    sessionLoadGenerationRef.current = loadGeneration;
+
+    if (!selectedSessionId || !selectedProject) {
       // A freshly created session can be mid-run before the router has a
       // canonical selectedSession (the URL effect synthesizes one on the
       // next render). Keep the active view intact instead of wiping it.
-      if (currentSessionId && processingSessionsRef.current?.has(currentSessionId)) {
+      setIsLoadingSessionMessages(false);
+      const activeCurrentSessionId = currentSessionIdRef.current;
+      if (activeCurrentSessionId && processingSessionsRef.current?.has(activeCurrentSessionId)) {
         return;
       }
 
@@ -496,7 +510,6 @@ export function useChatSessionState({
       return;
     }
 
-    const selectedSessionId = selectedSession.id;
     const sessionKey = `${selectedSessionId}:${selectedProject.projectId}`;
 
     const subscribeToSelectedSession = () => {
@@ -516,11 +529,13 @@ export function useChatSessionState({
 
     // Skip if already loaded and fresh
     if (lastLoadedSessionKeyRef.current === sessionKey && sessionStore.has(selectedSessionId) && !sessionStore.isStale(selectedSessionId)) {
+      setIsLoadingSessionMessages(false);
       subscribeToSelectedSession();
       return;
     }
 
-    const sessionChanged = currentSessionId !== null && currentSessionId !== selectedSessionId;
+    const activeCurrentSessionId = currentSessionIdRef.current;
+    const sessionChanged = activeCurrentSessionId !== null && activeCurrentSessionId !== selectedSessionId;
     if (sessionChanged) {
       resetStreamingState();
     }
@@ -561,24 +576,34 @@ export function useChatSessionState({
       limit: MESSAGES_PER_PAGE,
       offset: 0,
     }).then(slot => {
+      if (sessionLoadGenerationRef.current !== loadGeneration) {
+        return;
+      }
       if (slot) {
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
-        if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+        if (supportsTokenUsage && slot.tokenUsage) {
+          setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+        } else if (!supportsTokenUsage) {
+          setTokenBudget(null);
+        }
       }
       setIsLoadingSessionMessages(false);
     }).catch(() => {
-      setIsLoadingSessionMessages(false);
+      if (sessionLoadGenerationRef.current === loadGeneration) {
+        setIsLoadingSessionMessages(false);
+      }
     });
   }, [
     resetStreamingState,
     selectedProject,
-    selectedSession?.id,
+    selectedSessionId,
     sendMessage,
     statusCheckSentAtRef,
     lastSeqRef,
     ws,
     sessionStore,
+    supportsTokenUsage,
   ]);
 
   // External message update (e.g. WebSocket reconnect, background refresh)
@@ -706,27 +731,39 @@ export function useChatSessionState({
 
   // Initial token usage fetch for providers with file-backed usage data.
   useEffect(() => {
-    if (!selectedSession?.id) {
+    if (!supportsTokenUsage || !selectedSession?.id) {
       setTokenBudget(null);
       return;
     }
+    let cancelled = false;
     const fetchInitialTokenUsage = async () => {
       try {
         // The provider module resolves storage and provider details from the session id.
         const url = `/api/providers/sessions/${encodeURIComponent(selectedSession.id)}/token-usage`;
         const response = await authenticatedFetch(url);
+        if (cancelled) {
+          return;
+        }
         if (response.ok) {
           const payload = await response.json();
-          setTokenBudget(payload.data ?? null);
+          if (!cancelled) {
+            setTokenBudget(payload.data ?? null);
+          }
         } else {
           setTokenBudget(null);
         }
       } catch (error) {
-        console.error('Failed to fetch initial token usage:', error);
+        if (!cancelled) {
+          console.error('Failed to fetch initial token usage:', error);
+          setTokenBudget(null);
+        }
       }
     };
-    fetchInitialTokenUsage();
-  }, [selectedSession?.id]);
+    void fetchInitialTokenUsage();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSession?.id, supportsTokenUsage]);
 
   const visibleMessages = useMemo(() => {
     if (chatMessages.length <= visibleMessageCount) return chatMessages;

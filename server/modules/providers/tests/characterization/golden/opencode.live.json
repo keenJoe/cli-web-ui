@@ -1,0 +1,41 @@
+[
+  {
+    "id": "live-reasoning-1",
+    "sessionId": "native-opencode-1",
+    "timestamp": "<generated-timestamp>",
+    "provider": "opencode",
+    "kind": "thinking",
+    "content": "Plan the read."
+  },
+  {
+    "id": "live-tool-1",
+    "sessionId": "native-opencode-1",
+    "timestamp": "<generated-timestamp>",
+    "provider": "opencode",
+    "kind": "tool_use",
+    "toolName": "read",
+    "toolInput": {
+      "filePath": "README.md"
+    },
+    "toolId": "call_1",
+    "toolResult": {
+      "content": "# Title",
+      "isError": false
+    }
+  },
+  {
+    "id": "live-text-1",
+    "sessionId": "native-opencode-1",
+    "timestamp": "<generated-timestamp>",
+    "provider": "opencode",
+    "kind": "stream_delta",
+    "content": "Here is what I found."
+  },
+  {
+    "id": "live-step-1",
+    "sessionId": "native-opencode-1",
+    "timestamp": "<generated-timestamp>",
+    "provider": "opencode",
+    "kind": "stream_end"
+  }
+]

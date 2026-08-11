@@ -16,12 +16,12 @@ type ChatRunStatus = 'running' | 'completed';
  * One live (or recently finished) provider run for a single app session.
  *
  * State notes — why each mutable field is essential:
- * - `providerSessionId`: the provider-native id captured mid-run. The abort
- *   handler needs it to address the provider runtime, and the DB mapping is
- *   written from it so history/resume work after the run.
+ * - `providerSessionId`: mirrors the coordinator-persisted native id for
+ *   replay/broadcast metadata. The registry neither addresses runtimes by this
+ *   id nor writes the app/native DB mapping.
  * - `status`: drives `chat_subscribed.isProcessing`, prevents double sends
- *   into the same session, and guards the synthetic-complete fallback in the
- *   chat handler (only emitted when a runtime died without completing).
+ *   into the same session, and guards the compatibility safety fallback when
+ *   the coordinator/gateway terminal projection is missing.
  * - `lastSeq` / `events`: the per-run event log. Every live event gets a
  *   monotonically increasing `seq` and is buffered so a reconnecting client
  *   can replay exactly the events it missed via `chat.subscribe`.
@@ -127,10 +127,9 @@ function evictRunLater(appSessionId: string): void {
  * 4. Flip the run to `completed` when the terminal `complete` event passes by.
  */
 function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): NormalizedMessage | null {
-  // Exactly-one-complete contract: when a run is aborted the chat handler
-  // emits the terminal `complete` immediately, but the killed runtime may
-  // still emit its own `complete` from its exit handler moments later.
-  // Whichever arrives first wins; the duplicate is dropped here.
+  // Compatibility assertion for the exactly-one-complete contract: the
+  // coordinator owns normal terminal production. If a delayed gateway or
+  // safety terminal arrives after completion, first-wins drops it here.
   if (message.kind === 'complete' && run.status === 'completed') {
     return null;
   }
@@ -161,13 +160,13 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
 }
 
 /**
- * Records the provider-native session id for a run and persists the
- * app-id-to-provider-id mapping so history fetches and future resumes can
- * address the provider transcript.
+ * Records the provider-native session id after the coordinator has persisted
+ * the app-id-to-provider-id mapping.
  *
  * Called from the gateway writer when the runtime either calls
- * `setSessionId(...)` or emits its `session_created` event — whichever
- * happens first wins; later calls with the same id are no-ops.
+ * `setSessionId(...)` or emits its `session_created` event — whichever happens
+ * first wins; later calls with the same id are no-ops. This registry owns
+ * replay/broadcast only; identity persistence has one coordinator owner.
  */
 function recordProviderSessionId(run: ChatRun, providerSessionId: string): void {
   if (!providerSessionId || run.providerSessionId === providerSessionId) {
@@ -176,24 +175,14 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
 
   run.providerSessionId = providerSessionId;
 
-  try {
-    sessionsDb.assignProviderSessionId(run.appSessionId, providerSessionId);
-    void broadcastCanonicalSessionUpsert(run.appSessionId).catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error('[ChatRunRegistry] Failed to broadcast canonical session mapping', {
-        appSessionId: run.appSessionId,
-        providerSessionId,
-        error: message,
-      });
-    });
-  } catch (error) {
+  void broadcastCanonicalSessionUpsert(run.appSessionId).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    console.error('[ChatRunRegistry] Failed to persist provider session id mapping', {
+    console.error('[ChatRunRegistry] Failed to broadcast canonical session mapping', {
       appSessionId: run.appSessionId,
       providerSessionId,
       error: message,
     });
-  }
+  });
 }
 
 /**
@@ -306,8 +295,9 @@ export const chatRunRegistry = {
 
   /**
    * Emits a synthetic terminal `complete` if (and only if) the run is still
-   * marked running. Used when a provider runtime throws or resolves without
-   * having produced its own terminal event, and by the abort path.
+   * marked running. This is a compatibility safety net for a gateway path that
+   * settles without the coordinator's terminal projection; it is not normal
+   * runtime or abort control flow.
    */
   completeRun(appSessionId: string, opts: { exitCode: number; aborted?: boolean }): void {
     const run = runs.get(appSessionId);
@@ -320,11 +310,10 @@ export const chatRunRegistry = {
 
   /**
    * Safety-net variant of `completeRun` scoped to one specific run: a no-op
-   * unless `run` is still the session's current, running run. A runtime
-   * promise can resolve after its own `complete` already streamed AND a new
-   * run has replaced it in the registry (a queued message sends within
-   * milliseconds of the previous turn ending) — the session-keyed
-   * `completeRun` would terminate that newer run.
+   * unless `run` is still the session's current, running run. A gateway promise
+   * can settle after the coordinator-projected `complete` already streamed and
+   * a queued message replaced the run in the registry; the session-keyed
+   * `completeRun` would otherwise terminate that newer run.
    */
   completeRunIfCurrent(run: ChatRun, opts: { exitCode: number; aborted?: boolean }): void {
     if (runs.get(run.appSessionId) !== run || run.status !== 'running') {

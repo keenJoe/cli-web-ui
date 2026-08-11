@@ -1,0 +1,26 @@
+[
+  {
+    "kind": "stream_delta",
+    "content": "Here is what ",
+    "sessionId": "app-session-cursor",
+    "provider": "cursor",
+    "id": "<generated-id>",
+    "timestamp": "<generated-timestamp>"
+  },
+  {
+    "kind": "stream_delta",
+    "content": "I found.",
+    "sessionId": "app-session-cursor",
+    "provider": "cursor",
+    "id": "<generated-id>",
+    "timestamp": "<generated-timestamp>"
+  },
+  {
+    "kind": "stream_delta",
+    "content": "plain stdout line that is not JSON",
+    "sessionId": "app-session-cursor",
+    "provider": "cursor",
+    "id": "<generated-id>",
+    "timestamp": "<generated-timestamp>"
+  }
+]

@@ -4,6 +4,7 @@ import path from "path";
 import express from "express";
 
 import { parseFrontMatter } from "../../shared/frontmatter.js";
+import { AppError } from "../../shared/utils.js";
 
 type CommandsRouterDependencies = {
   fileSystem: typeof import('node:fs/promises');
@@ -131,9 +132,16 @@ async function scanCommandsDirectory(dir, baseDir, namespace) {
 
           // Calculate relative path from baseDir for command name
           const relativePath = path.relative(baseDir, fullPath);
-          // Remove .md extension and convert to command name
+          // Remove .md extension and convert to the invocation Claude accepts:
+          // directory nesting is expressed with `:`, matching the CLI (a file at
+          // `opsx/apply.md` is invoked as `/opsx:apply`). The name is sent to
+          // the provider verbatim, so this must not use `/` as the separator.
           const commandName =
-            "/" + relativePath.replace(/\.md$/, "").replace(/\\/g, "/");
+            "/" +
+            relativePath
+              .replace(/\.md$/, "")
+              .replace(/\\/g, "/")
+              .replace(/\//g, ":");
 
           // Extract description from frontmatter or first line of content
           let description = frontmatter.description || "";
@@ -522,6 +530,17 @@ router.post("/execute", async (req, res) => {
           `Error executing built-in command ${commandName}:`,
           error,
         );
+        if (error instanceof AppError) {
+          // Mirror the REST catalog endpoint's auth-gate shape so every entry
+          // point reports the same error code and status.
+          return res.status(error.statusCode).json({
+            error: {
+              code: error.code,
+              message: error.message,
+            },
+            command: commandName,
+          });
+        }
         return res.status(500).json({
           error: "Command execution failed",
           message: error.message,

@@ -13,7 +13,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'auth.db');
-  await initializeDatabase();
+  await initializeDatabase([]);
 
   try {
     await runTest();
@@ -31,7 +31,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 test('provider session id returns the mapped native id', { concurrency: false }, async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('app-session-id', 'codex', '/tmp/session-id-copy-project');
-    sessionsDb.assignProviderSessionId('app-session-id', 'codex-native-session-id');
+    sessionsDb.assignProviderSessionId('app-session-id', 'codex-native-session-id', 'codex');
 
     assert.equal(sessionsService.getProviderSessionId('app-session-id'), 'codex-native-session-id');
   });

@@ -53,9 +53,10 @@ type RegisterOptimisticSessionArgs = {
 };
 
 /**
- * Shape of `GET /api/providers/sessions/:sessionId` — the authoritative
- * session → owning-project resolution used when a `/session/<id>` URL points
- * at a session that is not present in the paginated project payloads.
+ * Shape of `GET /api/providers/sessions/:sessionId?provider=<provider>` — the
+ * authoritative session → owning-project resolution used when a
+ * `/session/<id>` URL points at a session that is not present in the paginated
+ * project payloads.
  */
 type SessionDetailsApiPayload = {
   data?: {
@@ -857,9 +858,10 @@ export function useProjectsState({
     sessionLookupRef.current = sessionId;
 
     void (async () => {
+      const provider = readSelectedProvider();
       let details: SessionDetailsApiPayload['data'] | null = null;
       try {
-        const response = await api.sessionDetails(sessionId);
+        const response = await api.sessionDetails(sessionId, provider);
         if (response.ok) {
           const payload = (await response.json()) as SessionDetailsApiPayload;
           details = payload.data ?? null;
@@ -885,7 +887,7 @@ export function useProjectsState({
 
         setSelectedSession({
           id: sessionId,
-          __provider: readSelectedProvider(),
+          __provider: provider,
           __projectId: fallbackProject.projectId,
           summary: '',
         });

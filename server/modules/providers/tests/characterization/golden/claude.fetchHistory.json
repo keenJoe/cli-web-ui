@@ -1,0 +1,60 @@
+{
+  "messages": [
+    {
+      "id": "hist-user-1_text_0",
+      "sessionId": "app-session-claude",
+      "timestamp": "2026-01-02T03:04:00.000Z",
+      "provider": "claude",
+      "kind": "text",
+      "role": "user",
+      "content": "Show me the README"
+    },
+    {
+      "id": "hist-assistant-1_0",
+      "sessionId": "app-session-claude",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "provider": "claude",
+      "kind": "thinking",
+      "content": "The user wants the README."
+    },
+    {
+      "id": "hist-assistant-1_1",
+      "sessionId": "app-session-claude",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "provider": "claude",
+      "kind": "text",
+      "role": "assistant",
+      "content": "Here is what I found."
+    },
+    {
+      "id": "hist-assistant-1_2",
+      "sessionId": "app-session-claude",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "provider": "claude",
+      "kind": "tool_use",
+      "toolName": "Read",
+      "toolInput": {
+        "file_path": "/repo/README.md"
+      },
+      "toolId": "toolu_live_1",
+      "toolResult": {
+        "content": "# Title",
+        "isError": false
+      }
+    },
+    {
+      "id": "hist-user-2_tr_toolu_live_1",
+      "sessionId": "app-session-claude",
+      "timestamp": "2026-01-02T03:04:06.000Z",
+      "provider": "claude",
+      "kind": "tool_result",
+      "toolId": "toolu_live_1",
+      "content": "# Title",
+      "isError": false
+    }
+  ],
+  "total": 4,
+  "hasMore": false,
+  "offset": 0,
+  "limit": null
+}

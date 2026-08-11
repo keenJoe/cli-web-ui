@@ -1,13 +1,24 @@
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import type { IProviderModels } from '@/shared/interfaces.js';
+import type { IProviderModels, ProviderModelsCatalog } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
   ProviderModelOption,
   ProviderModelsDefinition,
 } from '@/shared/types.js';
-import { buildDefaultProviderCurrentActiveModel } from '@/shared/utils.js';
+import {
+  buildDefaultProviderCurrentActiveModel,
+  computeModelsFingerprint,
+  fetchAnthropicModels,
+  readObjectRecord,
+  readOptionalString,
+} from '@/shared/utils.js';
+
+import { readClaudeSettings } from './claude-settings.js';
 
 export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
@@ -114,6 +125,54 @@ export const findClaudeModelOption = (model: string | undefined | null): Provide
   }
 
   return CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
+};
+
+// The gateway `/v1/models` payload only carries `{value, label}` and drops the
+// reasoning-effort metadata. Re-attach it by model family so the composer's
+// Reasoning selector keeps working for config-driven catalogs.
+const CLAUDE_EFFORT_BY_FAMILY: Record<string, ProviderModelOption['effort']> = {
+  opus: {
+    default: 'high',
+    values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }, { value: 'max' }],
+  },
+  fable: {
+    default: 'high',
+    values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }, { value: 'max' }],
+  },
+  sonnet: {
+    default: 'high',
+    values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'max' }],
+  },
+};
+
+const resolveClaudeEffortForModel = (value: string): ProviderModelOption['effort'] | undefined => {
+  const normalized = value.toLowerCase();
+  // haiku has no reasoning effort; leave it undefined so the selector stays hidden.
+  if (normalized.includes('haiku')) {
+    return undefined;
+  }
+  for (const [family, effort] of Object.entries(CLAUDE_EFFORT_BY_FAMILY)) {
+    if (normalized.includes(family)) {
+      return effort;
+    }
+  }
+  return undefined;
+};
+
+const buildClaudeModelsDefinitionFromFetched = (
+  fetched: Array<{ value: string; label: string }>,
+): ProviderModelsDefinition => {
+  if (fetched.length === 0) {
+    return CLAUDE_FALLBACK_MODELS;
+  }
+
+  return {
+    OPTIONS: fetched.map((option) => {
+      const effort = resolveClaudeEffortForModel(option.value);
+      return effort ? { ...option, effort } : option;
+    }),
+    DEFAULT: fetched[0]?.value ?? CLAUDE_FALLBACK_MODELS.DEFAULT,
+  };
 };
 type ClaudeInitEvent = {
   sessionId?: string;
@@ -225,7 +284,14 @@ const readClaudeSessionModelFromJsonl = async (
 };
 
 export class ClaudeProviderModels implements IProviderModels {
-  async getSupportedModels(): Promise<ProviderModelsDefinition> {
+  private readonly settingsPath: string;
+
+  constructor(dependencies: { settingsPath?: string } = {}) {
+    this.settingsPath = dependencies.settingsPath
+      ?? path.join(os.homedir(), '.claude', 'settings.json');
+  }
+
+  async getSupportedModels(): Promise<ProviderModelsCatalog> {
     // claude creates a new jsonl file as a separate session for this request.
     // As a result, it lists the workspace where this is invoked when it shouldn't.
     //
@@ -237,12 +303,80 @@ export class ClaudeProviderModels implements IProviderModels {
     // const supportedModels = await queryInstance.supportedModels();
     // queryInstance.close();
     // return buildClaudeModelsDefinition(supportedModels);
-    return CLAUDE_FALLBACK_MODELS;
+    const settings = await readClaudeSettings(this.settingsPath);
+    const fingerprint = settings
+      ? computeModelsFingerprint({
+          baseUrl: settings.baseUrl,
+          credential: settings.authToken ?? settings.apiKey,
+        })
+      : '';
+
+    if (settings) {
+      const fetched = await fetchAnthropicModels(settings.baseUrl, settings.apiKey, settings.authToken);
+      if (fetched) {
+        return {
+          models: buildClaudeModelsDefinitionFromFetched(fetched),
+          fingerprint,
+          cacheable: true,
+        };
+      }
+
+      // The configured API failed: fall back to the built-in list while
+      // keeping the full fingerprint so a different configuration never shares
+      // this entry, and stay out of the long-lived disk cache.
+      return {
+        models: CLAUDE_FALLBACK_MODELS,
+        fingerprint,
+        cacheable: false,
+      };
+    }
+
+    return {
+      models: CLAUDE_FALLBACK_MODELS,
+      fingerprint,
+      cacheable: fingerprint === '',
+    };
+  }
+
+  getCachedCatalogFingerprint(): string {
+    // Synchronous mirror of `readClaudeSettings()`: settings missing or
+    // incomplete (no base_url or no credential) yield an empty fingerprint.
+    let content: string;
+    try {
+      content = readFileSync(this.settingsPath, 'utf8');
+    } catch {
+      return '';
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return '';
+    }
+
+    const settings = readObjectRecord(parsed);
+    const env = settings ? readObjectRecord(settings.env) : null;
+    if (!env) {
+      return '';
+    }
+
+    const baseUrl = readOptionalString(env.ANTHROPIC_BASE_URL);
+    const apiKey = readOptionalString(env.ANTHROPIC_API_KEY);
+    const authToken = readOptionalString(env.ANTHROPIC_AUTH_TOKEN);
+    if (!baseUrl || !(apiKey || authToken)) {
+      return '';
+    }
+
+    return computeModelsFingerprint({
+      baseUrl,
+      credential: authToken ?? apiKey,
+    });
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {
     if (!sessionId?.trim()) {
-      return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+      return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
     }
 
     try {
@@ -257,6 +391,6 @@ export class ClaudeProviderModels implements IProviderModels {
       // Fall through to the provider default when the session-backed lookup fails.
     }
 
-    return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+    return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
   }
 }

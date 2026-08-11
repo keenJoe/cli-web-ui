@@ -26,6 +26,13 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly claudeHome = path.join(os.homedir(), '.claude');
 
   /**
+   * Resolves Claude's project transcript root for the sessions watcher.
+   */
+  getWatchRoots(): string[] {
+    return [path.join(this.claudeHome, 'projects')];
+  }
+
+  /**
    * Returns true when a JSONL file is a subagent transcript or tool result
    * rather than a top-level session.
    *
@@ -48,7 +55,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
   async synchronize(since?: Date): Promise<number> {
     const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
     const files = await findFilesRecursivelyCreatedAfter(
-      path.join(this.claudeHome, 'projects'),
+      this.getWatchRoots()[0],
       '.jsonl',
       since ?? null
     );
@@ -137,7 +144,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
     // App-created sessions are keyed by an app id, so disk-discovered provider
     // ids must be resolved through the provider-id mapping first.
-    const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
+    const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId, this.provider)
       ?? sessionsDb.getSessionById(parsed.sessionId);
     const existingSessionName = existingSession?.custom_name;
     if (existingSessionName && existingSessionName !== 'Untitled Claude Session') {

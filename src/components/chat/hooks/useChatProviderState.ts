@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
+import { useProviderCapabilities } from '../../../hooks/useProviderCapabilities';
+import { PROVIDER_IDS } from '../../llm-logo-provider/providerBranding';
+import { useProviderAuthStatus } from '../../provider-auth/hooks/useProviderAuthStatus';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type {
   ProjectSession,
@@ -9,61 +12,16 @@ import type {
   ProviderModelOption,
   ProviderModelsCacheInfo,
   ProviderModelsDefinition,
+  ProviderCapabilityStatus,
 } from '../../../types/app';
-import {
-  DEFAULT_EFFORT_VALUE,
-  FALLBACK_PROVIDER_EFFORT_VALUES,
-  toProviderEffortOptions,
-} from '../constants/providerEffort';
-
-const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
-  claude: 'default',
-  cursor: 'gpt-5.3-codex',
-  codex: 'gpt-5.4',
-  opencode: 'anthropic/claude-sonnet-4-5',
-  pi: 'anthropic/claude-sonnet-4-5',
-};
-
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'pi'];
+import { DEFAULT_EFFORT_VALUE } from '../constants/providerEffort';
+import { resolveProviderModelSelection } from '../utils/providerModelSelection';
 
 const readStoredProvider = (): LLMProvider => {
   const storedProvider = localStorage.getItem('selected-provider');
-  return PROVIDERS.includes(storedProvider as LLMProvider)
+  return PROVIDER_IDS.includes(storedProvider as LLMProvider)
     ? storedProvider as LLMProvider
     : 'claude';
-};
-
-/**
- * Fallback permission-mode matrix used only until the backend capability
- * matrix (`GET /api/providers/capabilities`) has loaded. The backend is the
- * source of truth; this mirror exists so the composer renders sensibly on
- * first paint and when the capabilities request fails.
- */
-const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
-  claude: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
-  cursor: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-  codex: ['default', 'acceptEdits', 'bypassPermissions'],
-  opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-  pi: ['bypassPermissions', 'plan'],
-};
-
-type ProviderCapabilities = {
-  provider: LLMProvider;
-  permissionModes: string[];
-  defaultPermissionMode: string;
-  supportsImages: boolean;
-  supportsFiles: boolean;
-  supportsAbort: boolean;
-  supportsPermissionRequests: boolean;
-  supportsTokenUsage: boolean;
-  supportsEffort?: boolean;
-};
-
-type ProviderCapabilitiesApiResponse = {
-  success?: boolean;
-  data?: {
-    providers?: ProviderCapabilities[];
-  };
 };
 
 interface UseChatProviderStateArgs {
@@ -94,42 +52,43 @@ type SessionModelApiResponse = {
   };
 };
 
+type SessionModelState = {
+  key: string | null;
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  model: string | null;
+  source: 'session' | 'provider' | 'default' | null;
+};
+
+const getSessionModelKey = (provider: LLMProvider, sessionId: string) => `${provider}:${sessionId}`;
+
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
+  const [permissionMode, setPermissionMode] = useState<PermissionMode | null>(null);
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<LLMProvider>(readStoredProvider);
-  const [cursorModel, setCursorModel] = useState<string>(() => {
-    return localStorage.getItem('cursor-model') || FALLBACK_DEFAULT_MODEL.cursor;
-  });
-  const [claudeModel, setClaudeModel] = useState<string>(() => {
-    return localStorage.getItem('claude-model') || FALLBACK_DEFAULT_MODEL.claude;
-  });
-  const [codexModel, setCodexModel] = useState<string>(() => {
-    return localStorage.getItem('codex-model') || FALLBACK_DEFAULT_MODEL.codex;
+  const [providerModels, setProviderModels] = useState<Partial<Record<LLMProvider, string>>>(() => {
+    return PROVIDER_IDS.reduce<Partial<Record<LLMProvider, string>>>((acc, targetProvider) => {
+      const storedModel = localStorage.getItem(`${targetProvider}-model`)?.trim();
+      if (storedModel) {
+        acc[targetProvider] = storedModel;
+      }
+      return acc;
+    }, {});
   });
   const [providerEfforts, setProviderEfforts] = useState<Partial<Record<LLMProvider, string>>>(() => {
-    return PROVIDERS.reduce<Partial<Record<LLMProvider, string>>>((acc, targetProvider) => {
+    return PROVIDER_IDS.reduce<Partial<Record<LLMProvider, string>>>((acc, targetProvider) => {
       acc[targetProvider] = localStorage.getItem(`${targetProvider}-effort`) || DEFAULT_EFFORT_VALUE;
       return acc;
     }, {});
   });
-  const [opencodeModel, setOpenCodeModel] = useState<string>(() => {
-    return localStorage.getItem('opencode-model') || FALLBACK_DEFAULT_MODEL.opencode;
-  });
-  const [piModel, setPiModel] = useState<string>(() => {
-    return localStorage.getItem('pi-model') || FALLBACK_DEFAULT_MODEL.pi;
-  });
 
-  /**
-   * Backend-owned capability matrix keyed by provider. Drives the permission
-   * mode picker (and is the extension point for future per-provider UI
-   * differences) so the frontend stays free of hardcoded provider branching.
-   * Null until `/api/providers/capabilities` resolves; the static fallback
-   * map covers that window.
-   */
-  const [providerCapabilities, setProviderCapabilities] = useState<
-    Partial<Record<LLMProvider, ProviderCapabilities>> | null
-  >(null);
+  const {
+    status: capabilitiesStatus,
+    byProvider: providerCapabilities,
+  } = useProviderCapabilities();
+
+  // Subscribe to the shared auth store so status changes made in settings or
+  // onboarding reach the chat page without a full page reload.
+  const { providerAuthStatus } = useProviderAuthStatus();
 
   const [providerModelCatalog, setProviderModelCatalog] = useState<
     Partial<Record<LLMProvider, ProviderModelsDefinition>>
@@ -143,32 +102,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const providerModelsRequestIdRef = useRef(0);
 
   const setStoredProviderModel = useCallback((targetProvider: LLMProvider, model: string) => {
-    if (targetProvider === 'claude') {
-      setClaudeModel(model);
-      localStorage.setItem('claude-model', model);
-      return;
-    }
-
-    if (targetProvider === 'cursor') {
-      setCursorModel(model);
-      localStorage.setItem('cursor-model', model);
-      return;
-    }
-
-    if (targetProvider === 'codex') {
-      setCodexModel(model);
-      localStorage.setItem('codex-model', model);
-      return;
-    }
-
-    if (targetProvider === 'opencode') {
-      setOpenCodeModel(model);
-      localStorage.setItem('opencode-model', model);
-      return;
-    }
-
-    setPiModel(model);
-    localStorage.setItem('pi-model', model);
+    setProviderModels((previous) => (
+      previous[targetProvider] === model
+        ? previous
+        : { ...previous, [targetProvider]: model }
+    ));
+    localStorage.setItem(`${targetProvider}-model`, model);
   }, []);
 
   const setStoredProviderEffort = useCallback((targetProvider: LLMProvider, effort: string) => {
@@ -193,20 +132,25 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     try {
       const results = await Promise.all(
-        PROVIDERS.map(async (p) => {
-          const params = new URLSearchParams();
-          if (options.bypassCache) {
-            params.set('bypassCache', 'true');
-          }
+        PROVIDER_IDS.map(async (p) => {
+          try {
+            const params = new URLSearchParams();
+            if (options.bypassCache) {
+              params.set('bypassCache', 'true');
+            }
 
-          const queryString = params.toString();
-          const response = await authenticatedFetch(`/api/providers/${p}/models${queryString ? `?${queryString}` : ''}`);
-          const body = (await response.json()) as ProviderModelsApiResponse;
-          if (!body.success || !body.data?.models || !body.data?.cache) {
+            const queryString = params.toString();
+            const response = await authenticatedFetch(`/api/providers/${p}/models${queryString ? `?${queryString}` : ''}`);
+            const body = (await response.json()) as ProviderModelsApiResponse;
+            if (!body.success || !body.data?.models || !body.data?.cache) {
+              return null;
+            }
+
+            return body.data;
+          } catch (error) {
+            console.error(`Error loading models for provider "${p}":`, error);
             return null;
           }
-
-          return body.data;
         }),
       );
 
@@ -217,7 +161,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       const nextCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
       const nextCacheCatalog: Partial<Record<LLMProvider, ProviderModelsCacheInfo>> = {};
 
-      PROVIDERS.forEach((p, i) => {
+      PROVIDER_IDS.forEach((p, i) => {
         const entry = results[i];
         if (!entry) {
           return;
@@ -243,72 +187,64 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     void loadProviderModels();
   }, [loadProviderModels]);
 
+  // Derived auth state for the active provider. The model menu is fully hidden
+  // only when the provider is definitively unauthenticated (check finished, no
+  // credentials, CLI installed); while the check is still running or failed it
+  // stays visible as a disabled skeleton so the user sees progress, not a
+  // vanishing control.
+  const currentProviderAuthStatus = providerAuthStatus[provider];
+  const modelMenuAvailable = !currentProviderAuthStatus.loading && currentProviderAuthStatus.authenticated;
+  const modelMenuHidden = !currentProviderAuthStatus.loading
+    && !currentProviderAuthStatus.authenticated
+    && currentProviderAuthStatus.installed;
+
+  // A login elsewhere (settings/onboarding) flips the shared store; the models
+  // fetched while unauthenticated fail the backend gate, so a false→true flip
+  // must refetch instead of waiting for a manual refresh.
+  const wasProviderAuthenticatedRef = useRef<boolean | null>(null);
   useEffect(() => {
-    let cancelled = false;
+    const wasAuthenticated = wasProviderAuthenticatedRef.current;
+    wasProviderAuthenticatedRef.current = modelMenuAvailable;
+    if (wasAuthenticated === false && modelMenuAvailable) {
+      void loadProviderModels();
+    }
+  }, [loadProviderModels, modelMenuAvailable]);
 
-    const loadCapabilities = async () => {
-      try {
-        const response = await authenticatedFetch('/api/providers/capabilities');
-        const body = (await response.json()) as ProviderCapabilitiesApiResponse;
-        if (cancelled || !body.success || !Array.isArray(body.data?.providers)) {
-          return;
-        }
-
-        const byProvider: Partial<Record<LLMProvider, ProviderCapabilities>> = {};
-        for (const capabilities of body.data.providers) {
-          byProvider[capabilities.provider] = capabilities;
-        }
-        setProviderCapabilities(byProvider);
-      } catch (error) {
-        console.error('Error loading provider capabilities:', error);
-      }
-    };
-
-    void loadCapabilities();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const getCapabilityStatusForProvider = useCallback((targetProvider: LLMProvider): ProviderCapabilityStatus => {
+    if (capabilitiesStatus !== 'ready') {
+      return capabilitiesStatus;
+    }
+    return providerCapabilities[targetProvider] ? 'ready' : 'error';
+  }, [capabilitiesStatus, providerCapabilities]);
 
   const getPermissionModesForProvider = useCallback((targetProvider: LLMProvider): PermissionMode[] => {
-    const capabilityModes = providerCapabilities?.[targetProvider]?.permissionModes;
+    if (getCapabilityStatusForProvider(targetProvider) !== 'ready') {
+      return [];
+    }
+
+    const capabilityModes = providerCapabilities[targetProvider]?.permissionModes;
     if (capabilityModes && capabilityModes.length > 0) {
       return capabilityModes as PermissionMode[];
     }
-    return FALLBACK_PERMISSION_MODES[targetProvider] ?? ['default'];
-  }, [providerCapabilities]);
+    return [];
+  }, [getCapabilityStatusForProvider, providerCapabilities]);
 
-  const getDefaultPermissionModeForProvider = useCallback((targetProvider: LLMProvider): PermissionMode => {
+  const getDefaultPermissionModeForProvider = useCallback((targetProvider: LLMProvider): PermissionMode | null => {
     const modes = getPermissionModesForProvider(targetProvider);
-    const capabilityDefault = providerCapabilities?.[targetProvider]?.defaultPermissionMode as PermissionMode | undefined;
+    const capabilityDefault = providerCapabilities[targetProvider]?.defaultPermissionMode as PermissionMode | undefined;
     if (capabilityDefault && modes.includes(capabilityDefault)) {
       return capabilityDefault;
     }
-    return modes[0] ?? 'default';
+    return null;
   }, [getPermissionModesForProvider, providerCapabilities]);
 
   const getSupportsEffortForProvider = useCallback((targetProvider: LLMProvider): boolean => {
-    const capabilitySupport = providerCapabilities?.[targetProvider]?.supportsEffort;
-    if (typeof capabilitySupport === 'boolean') {
-      return capabilitySupport;
+    if (getCapabilityStatusForProvider(targetProvider) !== 'ready') {
+      return false;
     }
-    return Boolean(FALLBACK_PROVIDER_EFFORT_VALUES[targetProvider]?.length);
-  }, [providerCapabilities]);
 
-  const pickStoredOrCurrent = (
-    storageKey: string,
-    current: string,
-    def: ProviderModelsDefinition,
-  ): string => {
-    const stored = localStorage.getItem(storageKey);
-    if (stored && def.OPTIONS.some((o) => o.value === stored)) {
-      return stored;
-    }
-    if (current && def.OPTIONS.some((o) => o.value === current)) {
-      return current;
-    }
-    return def.DEFAULT;
-  };
+    return providerCapabilities[targetProvider]?.supportsEffort === true;
+  }, [getCapabilityStatusForProvider, providerCapabilities]);
 
   const getModelOption = useCallback((
     targetProvider: LLMProvider,
@@ -335,22 +271,30 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       return option.effort?.values ?? [];
     }
 
-    return toProviderEffortOptions(FALLBACK_PROVIDER_EFFORT_VALUES[targetProvider] ?? []);
+    return [];
   }, [getModelOption, getSupportsEffortForProvider]);
-
-  const getAllowedEffortValues = useCallback((
-    targetProvider: LLMProvider,
-    model: string,
-  ): string[] => (
-    getEffortOptionsForModel(targetProvider, model).map((value) => value.value)
-  ), [getEffortOptionsForModel]);
 
   const reconcileStoredEffort = useCallback((
     targetProvider: LLMProvider,
     model: string,
     currentEffort: string,
   ): string => {
-    const allowedValues = getAllowedEffortValues(targetProvider, model);
+    if (getCapabilityStatusForProvider(targetProvider) !== 'ready') {
+      return currentEffort;
+    }
+
+    const supportsEffort = providerCapabilities[targetProvider]?.supportsEffort;
+    if (supportsEffort !== true) {
+      return DEFAULT_EFFORT_VALUE;
+    }
+
+    const definition = providerModelCatalog[targetProvider];
+    const option = definition?.OPTIONS.find((candidate) => candidate.value === model);
+    if (!definition || !option) {
+      return currentEffort;
+    }
+
+    const allowedValues = option.effort?.values.map((value) => value.value) ?? [];
     if (allowedValues.length === 0) {
       return DEFAULT_EFFORT_VALUE;
     }
@@ -364,88 +308,50 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
 
     return DEFAULT_EFFORT_VALUE;
-  }, [getAllowedEffortValues]);
-
-  const providerModels = useMemo<Record<LLMProvider, string>>(() => ({
-    claude: claudeModel,
-    cursor: cursorModel,
-    codex: codexModel,
-    opencode: opencodeModel,
-    pi: piModel,
-  }), [claudeModel, cursorModel, codexModel, opencodeModel, piModel]);
+  }, [getCapabilityStatusForProvider, providerCapabilities, providerModelCatalog]);
 
   useEffect(() => {
-    const claude = providerModelCatalog.claude;
-    if (claude) {
-      const next = pickStoredOrCurrent('claude-model', claudeModel, claude);
-      if (next !== claudeModel) {
-        setClaudeModel(next);
-      }
-      if (localStorage.getItem('claude-model') !== next) {
-        localStorage.setItem('claude-model', next);
-      }
-    }
-  }, [providerModelCatalog.claude, claudeModel]);
+    const nextModels: Partial<Record<LLMProvider, string>> = {};
+    let hasUpdates = false;
 
-  useEffect(() => {
-    const cursor = providerModelCatalog.cursor;
-    if (cursor) {
-      const next = pickStoredOrCurrent('cursor-model', cursorModel, cursor);
-      if (next !== cursorModel) {
-        setCursorModel(next);
+    for (const targetProvider of PROVIDER_IDS) {
+      const definition = providerModelCatalog[targetProvider];
+      if (!definition) {
+        continue;
       }
-      if (localStorage.getItem('cursor-model') !== next) {
-        localStorage.setItem('cursor-model', next);
-      }
-    }
-  }, [providerModelCatalog.cursor, cursorModel]);
 
-  useEffect(() => {
-    const codex = providerModelCatalog.codex;
-    if (codex) {
-      const next = pickStoredOrCurrent('codex-model', codexModel, codex);
-      if (next !== codexModel) {
-        setCodexModel(next);
+      const storageKey = `${targetProvider}-model`;
+      const currentModel = providerModels[targetProvider];
+      const next = resolveProviderModelSelection(
+        definition,
+        localStorage.getItem(storageKey),
+        currentModel,
+      );
+      if (!next) {
+        continue;
       }
-      if (localStorage.getItem('codex-model') !== next) {
-        localStorage.setItem('codex-model', next);
+      if (next !== currentModel) {
+        nextModels[targetProvider] = next;
+        hasUpdates = true;
+      }
+      if (localStorage.getItem(storageKey) !== next) {
+        localStorage.setItem(storageKey, next);
       }
     }
-  }, [providerModelCatalog.codex, codexModel]);
 
-  useEffect(() => {
-    const opencode = providerModelCatalog.opencode;
-    if (opencode) {
-      const next = pickStoredOrCurrent('opencode-model', opencodeModel, opencode);
-      if (next !== opencodeModel) {
-        setOpenCodeModel(next);
-      }
-      if (localStorage.getItem('opencode-model') !== next) {
-        localStorage.setItem('opencode-model', next);
-      }
+    if (hasUpdates) {
+      setProviderModels((previous) => ({ ...previous, ...nextModels }));
     }
-  }, [providerModelCatalog.opencode, opencodeModel]);
-
-  useEffect(() => {
-    const pi = providerModelCatalog.pi;
-    if (pi) {
-      const next = pickStoredOrCurrent('pi-model', piModel, pi);
-      if (next !== piModel) {
-        setPiModel(next);
-      }
-      if (localStorage.getItem('pi-model') !== next) {
-        localStorage.setItem('pi-model', next);
-      }
-    }
-  }, [providerModelCatalog.pi, piModel]);
+  }, [providerModelCatalog, providerModels]);
 
   useEffect(() => {
     const nextEfforts: Partial<Record<LLMProvider, string>> = {};
     let hasUpdates = false;
 
-    for (const targetProvider of PROVIDERS) {
+    for (const targetProvider of PROVIDER_IDS) {
       const currentEffort = providerEfforts[targetProvider] ?? DEFAULT_EFFORT_VALUE;
-      const nextEffort = reconcileStoredEffort(targetProvider, providerModels[targetProvider], currentEffort);
+      const currentModel = providerModels[targetProvider] ?? '';
+      const nextEffort = reconcileStoredEffort(targetProvider, currentModel, currentEffort);
       if (nextEffort === currentEffort) {
         continue;
       }
@@ -462,6 +368,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   useEffect(() => {
     const validModes = getPermissionModesForProvider(provider);
+    if (validModes.length === 0) {
+      setPermissionMode(null);
+      return;
+    }
+
     const sessionSavedMode = selectedSession?.id
       ? (localStorage.getItem(`permissionMode-${selectedSession.id}`) as PermissionMode | null)
       : null;
@@ -494,6 +405,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [selectedSession?.id]);
 
   const selectPermissionMode = useCallback((nextMode: PermissionMode) => {
+    if (!getPermissionModesForProvider(provider).includes(nextMode)) {
+      return;
+    }
+
     setPermissionMode(nextMode);
 
     // Persist per provider as well as per session: a brand-new chat has no
@@ -503,12 +418,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (selectedSession?.id) {
       localStorage.setItem(`permissionMode-${selectedSession.id}`, nextMode);
     }
-  }, [provider, selectedSession?.id]);
+  }, [getPermissionModesForProvider, provider, selectedSession?.id]);
 
   const cyclePermissionMode = useCallback(() => {
     const modes = getPermissionModesForProvider(provider);
+    if (modes.length === 0) {
+      return;
+    }
 
-    const currentIndex = modes.indexOf(permissionMode);
+    const currentIndex = permissionMode ? modes.indexOf(permissionMode) : -1;
     const nextIndex = (currentIndex + 1) % modes.length;
     selectPermissionMode(modes[nextIndex]);
   }, [permissionMode, provider, getPermissionModesForProvider, selectPermissionMode]);
@@ -521,7 +439,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const resolvePermissionModeForProvider = useCallback((
     targetProvider: LLMProvider,
     requestedMode: PermissionMode | string,
-  ): PermissionMode => {
+  ): PermissionMode | null => {
     const validModes = getPermissionModesForProvider(targetProvider);
     return validModes.includes(requestedMode as PermissionMode)
       ? requestedMode as PermissionMode
@@ -533,36 +451,68 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
    * session is open, or when the backend has nothing recorded for it and only
    * offered the catalog default — the per-provider selection covers that case.
    */
-  const [sessionModel, setSessionModel] = useState<string | null>(null);
+  const sessionModelProvider = selectedSession?.__provider ?? provider;
+  const sessionModelId = selectedSession?.id ?? null;
+  const sessionModelKey = sessionModelId
+    ? getSessionModelKey(sessionModelProvider, sessionModelId)
+    : null;
+  const [sessionModelState, setSessionModelState] = useState<SessionModelState>({
+    key: null,
+    status: 'idle',
+    model: null,
+    source: null,
+  });
 
   useEffect(() => {
-    const sessionId = selectedSession?.id;
-    if (!sessionId) {
-      setSessionModel(null);
+    if (!sessionModelId || !sessionModelKey) {
+      setSessionModelState((previous) => (
+        previous.key === null
+        && previous.status === 'idle'
+        && previous.model === null
+        && previous.source === null
+          ? previous
+          : { key: null, status: 'idle', model: null, source: null }
+      ));
       return;
     }
 
     let cancelled = false;
-    const targetProvider = selectedSession?.__provider ?? provider;
+    setSessionModelState({ key: sessionModelKey, status: 'loading', model: null, source: null });
 
     const loadSessionModel = async () => {
       try {
         const response = await authenticatedFetch(
-          `/api/providers/${targetProvider}/sessions/${encodeURIComponent(sessionId)}/active-model`,
+          `/api/providers/${sessionModelProvider}/sessions/${encodeURIComponent(sessionModelId)}/active-model`,
         );
         const body = (await response.json()) as SessionModelApiResponse;
         if (cancelled) {
           return;
         }
+        const data = body.data;
+        const source = data?.source;
+        const resolvedModel = data?.model?.trim();
+        if (
+          !response.ok
+          || !body.success
+          || !data
+          || data.provider !== sessionModelProvider
+          || data.sessionId !== sessionModelId
+          || (source !== 'session' && source !== 'provider' && source !== 'default')
+          || !resolvedModel
+        ) {
+          throw new Error(`Active model request failed (${response.status})`);
+        }
 
-        const resolvedModel = body.data?.model?.trim();
-        setSessionModel(
-          body.success && resolvedModel && body.data?.source !== 'default' ? resolvedModel : null,
-        );
+        setSessionModelState({
+          key: sessionModelKey,
+          status: 'ready',
+          model: source !== 'default' ? resolvedModel : null,
+          source,
+        });
       } catch (error) {
         if (!cancelled) {
           console.error('Error loading the session model:', error);
-          setSessionModel(null);
+          setSessionModelState({ key: sessionModelKey, status: 'error', model: null, source: null });
         }
       }
     };
@@ -571,7 +521,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     return () => {
       cancelled = true;
     };
-  }, [provider, selectedSession?.__provider, selectedSession?.id]);
+  }, [sessionModelId, sessionModelKey, sessionModelProvider]);
 
   /**
    * Applies a model choice.
@@ -606,46 +556,88 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
 
     const storedModel = body.data?.model?.trim() || model;
-    setSessionModel(storedModel);
+    setSessionModelState({
+      key: getSessionModelKey(targetProvider, normalizedSessionId),
+      status: 'ready',
+      model: storedModel,
+      source: 'session',
+    });
     return { scope: 'session' as const, model: storedModel };
   }, [setStoredProviderModel]);
 
   // The open session's model wins over the per-provider default, so switching
   // sessions shows (and sends) what each session actually runs with.
-  const currentProviderModel = sessionModel ?? providerModels[provider];
+  const providerCapabilityStatus = getCapabilityStatusForProvider(provider);
+  const supportsSkills = providerCapabilityStatus === 'ready'
+    && providerCapabilities[provider]?.supportsSkills === true;
+  const supportsTokenUsage = providerCapabilityStatus === 'ready'
+    && providerCapabilities[provider]?.supportsTokenUsage === true;
+  const catalogProviderModel = useMemo(() => {
+    const definition = providerModelCatalog[provider];
+    if (!definition) {
+      return null;
+    }
+
+    return resolveProviderModelSelection(definition, providerModels[provider]);
+  }, [provider, providerModelCatalog, providerModels]);
+  const isSessionModelReady = sessionModelKey === null || (
+    sessionModelState.key === sessionModelKey && sessionModelState.status === 'ready'
+  );
+  const resolvedSessionModel = sessionModelKey === null ? null : sessionModelState.model;
+  const currentProviderModel = providerCapabilityStatus === 'ready'
+    && isSessionModelReady
+    ? resolvedSessionModel ?? catalogProviderModel
+    : null;
   const currentProviderEffortOptions = useMemo(() => {
+    if (!currentProviderModel) {
+      return [];
+    }
     return getEffortOptionsForModel(provider, currentProviderModel);
   }, [currentProviderModel, getEffortOptionsForModel, provider]);
   const currentProviderEffort = useMemo(() => {
+    if (!currentProviderModel) {
+      return DEFAULT_EFFORT_VALUE;
+    }
     return reconcileStoredEffort(
       provider,
       currentProviderModel,
       providerEfforts[provider] ?? DEFAULT_EFFORT_VALUE,
     );
   }, [currentProviderModel, provider, providerEfforts, reconcileStoredEffort]);
-  const currentProviderModelOptions = useMemo(
-    () => providerModelCatalog[provider]?.OPTIONS ?? [],
-    [provider, providerModelCatalog],
-  );
+  const currentProviderModelOptions = useMemo(() => {
+    const definition = providerModelCatalog[provider];
+    const catalogOptions = definition?.OPTIONS ?? [];
+    if (
+      !definition
+      || catalogOptions.length === 0
+      || !currentProviderModel
+      || catalogOptions.some((option) => option.value === currentProviderModel)
+    ) {
+      return catalogOptions;
+    }
+
+    // Keep an explicitly selected model visible while the loaded provider
+    // catalog is stale. It is intentionally metadata-light: effort controls
+    // remain hidden until the provider advertises the model.
+    return [
+      ...catalogOptions,
+      { value: currentProviderModel, label: currentProviderModel },
+    ];
+  }, [currentProviderModel, provider, providerModelCatalog]);
 
   return {
     provider,
     setProvider,
-    cursorModel,
-    setCursorModel,
-    claudeModel,
-    setClaudeModel,
-    codexModel,
-    setCodexModel,
+    providerModels,
+    setStoredProviderModel,
     currentProviderEffort,
     currentProviderEffortOptions,
     currentProviderModel,
     currentProviderModelOptions,
-    opencodeModel,
-    setOpenCodeModel,
-    piModel,
-    setPiModel,
-    permissionMode,
+    permissionMode: providerCapabilityStatus === 'ready' ? permissionMode : null,
+    providerCapabilityStatus,
+    supportsSkills,
+    supportsTokenUsage,
     setPermissionMode,
     pendingPermissionRequests,
     setPendingPermissionRequests,
@@ -656,6 +648,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     providerModelCacheCatalog,
     providerModelsLoading,
     providerModelsRefreshing,
+    providerAuthStatus,
+    modelMenuAvailable,
+    modelMenuHidden,
     hardRefreshProviderModels: () => loadProviderModels({ bypassCache: true }),
     selectProviderModel,
     setStoredProviderEffort,

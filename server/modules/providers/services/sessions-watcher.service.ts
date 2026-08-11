@@ -1,40 +1,37 @@
-import os from 'node:os';
 import path from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import { sessionChangePublisher } from '@/modules/providers/services/session-change-publisher.service.js';
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
-import { PiPaths } from '@/modules/providers/list/pi/pi-paths.provider.js';
-import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
 
 type WatcherEventType = 'add' | 'change';
 
-export const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> = [
-  {
-    provider: 'claude',
-    rootPath: path.join(os.homedir(), '.claude', 'projects'),
-  },
-  {
-    provider: 'cursor',
-    rootPath: path.join(os.homedir(), '.cursor', 'projects'),
-  },
-  {
-    provider: 'codex',
-    rootPath: path.join(os.homedir(), '.codex', 'sessions'),
-  },
-  {
-    provider: 'opencode',
-    rootPath: path.join(os.homedir(), '.local', 'share', 'opencode'),
-  },
-  ...new PiPaths().getSessionRoots().map((rootPath) => ({
-    provider: 'pi' as LLMProvider,
-    rootPath,
-  })),
-];
+type ProviderWatchPath = {
+  provider: LLMProvider;
+  rootPath: string;
+};
+
+type SessionUpsertedEvent = Parameters<typeof sessionChangePublisher.publishSessionUpserted>[0];
+
+/**
+ * Resolves watcher paths from the synchronizers owned by registered providers.
+ * Watcher initialization consumes this result so provider storage paths remain
+ * provider-owned; the provider path test also verifies this registry boundary.
+ */
+export function resolveProviderWatchPaths(): ProviderWatchPath[] {
+  return providerRegistry.listProviders().flatMap((provider) =>
+    provider.sessionSynchronizer.getWatchRoots().map((rootPath) => ({
+      provider: provider.id,
+      rootPath,
+    })),
+  );
+}
 
 const WATCHER_IGNORED_PATTERNS = [
   '**/node_modules/**',
@@ -57,11 +54,13 @@ type PendingWatcherUpdate = {
   providers: Set<LLMProvider>;
   changeTypes: Set<WatcherEventType>;
   /**
-   * Provider-native session ids reported by the synchronizers. They are
-   * translated back to app-facing session rows at flush time, because the
-   * transcript file names on disk only ever contain provider ids.
+   * Provider-native session ids reported by the synchronizers, each paired with
+   * its owning provider. They are translated back to app-facing session rows at
+   * flush time, because the transcript file names on disk only ever contain
+   * provider ids — and those ids are only unique within one provider. Keyed by
+   * `provider` + native id so repeated file events collapse into one lookup.
    */
-  updatedSessionIds: Set<string>;
+  updatedSessions: Map<string, { provider: LLMProvider; sessionId: string }>;
 };
 
 let pendingWatcherUpdate: PendingWatcherUpdate | null = null;
@@ -69,17 +68,6 @@ let pendingWatcherUpdateStartedAt: number | null = null;
 let pendingWatcherFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let watcherRefreshInFlight = false;
 let watcherRescheduleAfterRefresh = false;
-
-/**
- * Filters watcher events to provider-specific session artifact file types.
- */
-function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
-  if (provider === 'opencode') {
-    return path.basename(filePath) === 'opencode.db';
-  }
-
-  return filePath.endsWith('.jsonl');
-}
 
 function clearPendingWatcherFlushTimer(): void {
   if (pendingWatcherFlushTimer) {
@@ -117,14 +105,17 @@ function queuePendingWatcherUpdate(
     pendingWatcherUpdate = {
       providers: new Set<LLMProvider>(),
       changeTypes: new Set<WatcherEventType>(),
-      updatedSessionIds: new Set<string>(),
+      updatedSessions: new Map<string, { provider: LLMProvider; sessionId: string }>(),
     };
   }
 
   pendingWatcherUpdate.providers.add(provider);
   pendingWatcherUpdate.changeTypes.add(eventType);
   if (updatedSessionId) {
-    pendingWatcherUpdate.updatedSessionIds.add(updatedSessionId);
+    pendingWatcherUpdate.updatedSessions.set(`${provider}:${updatedSessionId}`, {
+      provider,
+      sessionId: updatedSessionId,
+    });
   }
 
   schedulePendingWatcherFlush();
@@ -138,8 +129,11 @@ function queuePendingWatcherUpdate(
  * project-list refetch when a transcript file changes on disk. Returns `null`
  * when the id cannot be resolved to an indexed session row.
  */
-async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Promise<string | null> {
-  const row = sessionsDb.getSessionByProviderSessionId(updatedProviderSessionId)
+async function buildSessionUpsertedEvent(
+  updatedProviderSessionId: string,
+  provider: LLMProvider
+): Promise<SessionUpsertedEvent | null> {
+  const row = sessionsDb.getSessionByProviderSessionId(updatedProviderSessionId, provider)
     ?? sessionsDb.getSessionById(updatedProviderSessionId);
   if (!row || row.isArchived) {
     return null;
@@ -151,10 +145,10 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
     ? project.custom_project_name
     : await generateDisplayName(path.basename(projectPath ?? '') || (projectPath ?? ''), projectPath);
 
-  return JSON.stringify({
+  return {
     kind: 'session_upserted',
     sessionId: row.session_id,
-    provider: row.provider,
+    provider: row.provider as LLMProvider,
     session: {
       id: row.session_id,
       summary: row.custom_name || '',
@@ -171,7 +165,7 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
       }
       : null,
     timestamp: new Date().toISOString(),
-  });
+  };
 }
 
 async function flushPendingWatcherUpdate(): Promise<void> {
@@ -195,22 +189,19 @@ async function flushPendingWatcherUpdate(): Promise<void> {
     // Per-session deltas instead of full project snapshots: an upsert of one
     // session can never clobber unrelated client state, so the frontend needs
     // no "suppress updates while a run is active" protection logic.
-    const events: string[] = [];
-    for (const updatedSessionId of queuedUpdate.updatedSessionIds) {
-      const event = await buildSessionUpsertedEvent(updatedSessionId);
+    const events: SessionUpsertedEvent[] = [];
+    for (const updatedSession of queuedUpdate.updatedSessions.values()) {
+      const event = await buildSessionUpsertedEvent(
+        updatedSession.sessionId,
+        updatedSession.provider
+      );
       if (event) {
         events.push(event);
       }
     }
 
-    if (events.length > 0) {
-      connectedClients.forEach(client => {
-        if (client.readyState === WS_OPEN_STATE) {
-          for (const event of events) {
-            client.send(event);
-          }
-        }
-      });
+    for (const event of events) {
+      sessionChangePublisher.publishSessionUpserted(event);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -233,10 +224,6 @@ async function onUpdate(
   filePath: string,
   provider: LLMProvider
 ): Promise<void> {
-  if (!isWatcherTargetFile(provider, filePath)) {
-    return;
-  }
-
   try {
     const result = await sessionSynchronizerService.synchronizeProviderFile(provider, filePath);
     if (!result.indexed) {
@@ -270,7 +257,7 @@ export async function initializeSessionsWatcher(): Promise<void> {
     failures: initialSync.failures,
   });
 
-  for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
+  for (const { provider, rootPath } of resolveProviderWatchPaths()) {
     try {
       await fsPromises.mkdir(rootPath, { recursive: true });
 

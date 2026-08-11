@@ -1,0 +1,59 @@
+{
+  "messages": [
+    {
+      "id": "msg-1_part-1",
+      "sessionId": "app-session-opencode",
+      "timestamp": "2026-01-02T03:00:00.000Z",
+      "provider": "opencode",
+      "kind": "text",
+      "role": "user",
+      "content": "Show me the README"
+    },
+    {
+      "id": "msg-2_part-2",
+      "sessionId": "app-session-opencode",
+      "timestamp": "2026-01-02T03:00:01.000Z",
+      "provider": "opencode",
+      "kind": "thinking",
+      "content": "Plan the read."
+    },
+    {
+      "id": "msg-2_part-3",
+      "sessionId": "app-session-opencode",
+      "timestamp": "2026-01-02T03:00:02.000Z",
+      "provider": "opencode",
+      "kind": "tool_use",
+      "toolName": "read",
+      "toolInput": {
+        "filePath": "README.md"
+      },
+      "toolId": "call_1",
+      "toolResult": {
+        "content": "# Title",
+        "isError": false
+      }
+    },
+    {
+      "id": "msg-2_part-4",
+      "sessionId": "app-session-opencode",
+      "timestamp": "2026-01-02T03:00:03.000Z",
+      "provider": "opencode",
+      "kind": "text",
+      "role": "assistant",
+      "content": "Here is what I found."
+    }
+  ],
+  "total": 4,
+  "hasMore": false,
+  "offset": 0,
+  "limit": null,
+  "tokenUsage": {
+    "used": 236,
+    "inputTokens": 160,
+    "outputTokens": 64,
+    "breakdown": {
+      "input": 160,
+      "output": 64
+    }
+  }
+}

@@ -240,8 +240,10 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       }
 
       setSaveStatus(authStatus.authenticated ? 'success' : 'error');
+      // Propagate the freshly logged-in state to every shared-store consumer.
+      void refreshProviderAuthStatuses();
     })();
-  }, [checkProviderAuthStatus, loginProvider]);
+  }, [checkProviderAuthStatus, loginProvider, refreshProviderAuthStatuses]);
 
   const saveSettings = useCallback(async () => {
     setSaveStatus(null);
@@ -309,6 +311,16 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     void loadSettings();
     void refreshProviderAuthStatuses();
   }, [initialTab, isOpen, loadSettings, refreshProviderAuthStatuses]);
+
+  // Refresh on close so chat-side shared-store consumers pick up any auth
+  // change made while the settings dialog was open.
+  const wasSettingsOpenRef = useRef(isOpen);
+  useEffect(() => {
+    if (wasSettingsOpenRef.current && !isOpen) {
+      void refreshProviderAuthStatuses();
+    }
+    wasSettingsOpenRef.current = isOpen;
+  }, [isOpen, refreshProviderAuthStatuses]);
 
   useEffect(() => {
     setNotificationSoundEnabled(notificationPreferences.channels.sound);

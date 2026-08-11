@@ -285,6 +285,18 @@ const parseProvider = (value: unknown): LLMProvider => {
   return providerRegistry.resolveProvider(normalized).id;
 };
 
+const parseProviderQuery = (value: unknown): LLMProvider => {
+  const normalized = readOptionalQueryString(value);
+  if (!normalized) {
+    throw new AppError('provider query parameter is required.', {
+      code: 'PROVIDER_REQUIRED',
+      statusCode: 400,
+    });
+  }
+
+  return providerRegistry.resolveProvider(normalized.toLowerCase()).id;
+};
+
 const parseSessionRenameSummary = (payload: unknown): string => {
   if (!payload || typeof payload !== 'object') {
     throw new AppError('Request body must be an object.', {
@@ -405,7 +417,7 @@ router.post(
     const provider = parseProvider(req.params.provider);
     const sessionId = parseSessionId(req.params.sessionId);
     const model = parseSessionModelPayload(req.body);
-    const stored = providerModelsService.setSessionModel(provider, sessionId, model);
+    const stored = await providerModelsService.setSessionModel(provider, sessionId, model);
     // A session row only exists once the gateway has allocated one. Report the
     // selection back either way so the client can hold it until the first send.
     res.json(createApiSuccessResponse(
@@ -586,7 +598,8 @@ router.get(
   '/sessions/:sessionId',
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);
-    const result = sessionsService.getSessionDetailsById(sessionId);
+    const provider = parseProviderQuery(req.query.provider);
+    const result = sessionsService.getSessionDetailsById(sessionId, provider);
     res.json(createApiSuccessResponse(result));
   }),
 );

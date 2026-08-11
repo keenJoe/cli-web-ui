@@ -1,0 +1,24 @@
+[
+  {
+    "id": "blob-1",
+    "sessionId": "app-session-cursor",
+    "timestamp": "<generated-timestamp>",
+    "provider": "cursor",
+    "kind": "text",
+    "role": "user",
+    "content": "Show me the README",
+    "sequence": 0,
+    "rowid": 1
+  },
+  {
+    "id": "blob-2",
+    "sessionId": "app-session-cursor",
+    "timestamp": "<generated-timestamp>",
+    "provider": "cursor",
+    "kind": "text",
+    "role": "assistant",
+    "content": "Here is what I found.",
+    "sequence": 1,
+    "rowid": 2
+  }
+]

@@ -4,7 +4,8 @@ import path from 'node:path';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
-import type { IProvider } from '@/shared/interfaces.js';
+import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
+import type { IProvider, IProviderModels } from '@/shared/interfaces.js';
 import type {
   LLMProvider,
   ProviderCurrentActiveModel,
@@ -15,6 +16,8 @@ import type {
 } from '@/shared/types.js';
 
 export const PROVIDER_MODELS_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+/** Short-lived in-memory TTL for `cacheable=false` fallback results. */
+export const PROVIDER_MODELS_FALLBACK_TTL_MS = 5 * 60 * 1000;
 const PROVIDER_MODELS_CACHE_VERSION = 2;
 const UNCACHED_PROVIDERS = new Set<LLMProvider>(['claude']);
 
@@ -26,6 +29,7 @@ type ProviderModelsSessionStore = {
 
 type ProviderModelsServiceDependencies = {
   resolveProvider?: (provider: LLMProvider) => Pick<IProvider, 'models'>;
+  assertProviderAuthenticated?: (provider: LLMProvider) => Promise<void> | void;
   cachePath?: string;
   sessions?: ProviderModelsSessionStore;
   now?: () => number;
@@ -39,6 +43,8 @@ type ProviderModelsCacheEntry = {
   updatedAt: number;
   expiresAt: number;
   models: ProviderModelsDefinition;
+  /** false = fallback from a failed configured API fetch: memory-only, never persisted. */
+  cacheable: boolean;
 };
 
 type ProviderModelsCacheFile = {
@@ -51,6 +57,8 @@ const getProviderModelsCachePath = (): string => path.join(
   '.cloudcli',
   'provider-models-cache.json',
 );
+
+const buildCacheKey = (provider: LLMProvider, fingerprint: string): string => `${provider}:${fingerprint}`;
 
 const toProviderModelsCacheInfo = (
   entry: ProviderModelsCacheEntry,
@@ -117,11 +125,13 @@ const readProviderModelsCacheFile = async (
 
 const writeProviderModelsCacheFile = async (
   cachePath: string,
-  entries: Map<LLMProvider, ProviderModelsCacheEntry>,
+  entries: Map<string, ProviderModelsCacheEntry>,
   now: number,
 ): Promise<void> => {
   const serializableEntries = Object.fromEntries(
-    [...entries.entries()].filter(([, entry]) => entry.expiresAt > now),
+    [...entries.entries()].filter(
+      ([, entry]) => entry.cacheable !== false && entry.expiresAt > now,
+    ),
   );
   const payload: ProviderModelsCacheFile = {
     version: PROVIDER_MODELS_CACHE_VERSION,
@@ -140,21 +150,24 @@ const writeProviderModelsCacheFile = async (
  * place.
  */
 export const createProviderModelsService = (dependencies: ProviderModelsServiceDependencies = {}) => {
-  const resolveProvider = dependencies.resolveProvider ?? providerRegistry.resolveProvider;
+  const resolveProvider = dependencies.resolveProvider
+    ?? ((provider: LLMProvider) => providerRegistry.resolveProvider(provider));
+  const assertProviderAuthenticated = dependencies.assertProviderAuthenticated
+    ?? ((provider: LLMProvider) => providerAuthService.assertProviderAuthenticated(provider));
   const cachePath = dependencies.cachePath ?? getProviderModelsCachePath();
   const sessions = dependencies.sessions ?? sessionsDb;
   const now = dependencies.now ?? (() => Date.now());
-  const memoryCache = new Map<LLMProvider, ProviderModelsCacheEntry>();
-  const pendingRequests = new Map<LLMProvider, Promise<ProviderModelsResult>>();
+  const memoryCache = new Map<string, ProviderModelsCacheEntry>();
+  const pendingRequests = new Map<string, Promise<ProviderModelsResult>>();
   let persistedCacheLoaded = false;
   let persistedCacheLoadPromise: Promise<void> | null = null;
 
   const pruneExpiredMemoryEntry = (
-    provider: LLMProvider,
+    cacheKey: string,
     currentTime: number,
     source: ProviderModelsCacheInfo['source'],
   ): ProviderModelsResult | null => {
-    const cachedEntry = memoryCache.get(provider);
+    const cachedEntry = memoryCache.get(cacheKey);
     if (!cachedEntry) {
       return null;
     }
@@ -166,7 +179,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
       };
     }
 
-    memoryCache.delete(provider);
+    memoryCache.delete(cacheKey);
     return null;
   };
 
@@ -180,9 +193,9 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
         const cacheFile = await readProviderModelsCacheFile(cachePath);
         const currentTime = now();
 
-        for (const [provider, entry] of Object.entries(cacheFile?.entries ?? {})) {
+        for (const [cacheKey, entry] of Object.entries(cacheFile?.entries ?? {})) {
           if (entry.expiresAt > currentTime) {
-            memoryCache.set(provider as LLMProvider, entry);
+            memoryCache.set(cacheKey, { ...entry, cacheable: entry.cacheable !== false });
           }
         }
 
@@ -205,47 +218,58 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
 
   const setCacheEntry = async (
     provider: LLMProvider,
+    fingerprint: string,
     models: ProviderModelsDefinition,
+    cacheable: boolean,
   ): Promise<ProviderModelsCacheEntry> => {
     const currentTime = now();
+    const ttl = cacheable ? PROVIDER_MODELS_CACHE_TTL_MS : PROVIDER_MODELS_FALLBACK_TTL_MS;
     const entry: ProviderModelsCacheEntry = {
       updatedAt: currentTime,
-      expiresAt: currentTime + PROVIDER_MODELS_CACHE_TTL_MS,
+      expiresAt: currentTime + ttl,
       models,
+      cacheable,
     };
 
-    memoryCache.set(provider, entry);
-    await persistCache();
+    memoryCache.set(buildCacheKey(provider, fingerprint), entry);
+    if (cacheable) {
+      await persistCache();
+    }
     return entry;
   };
 
   const loadAndCacheModels = (
+    models: IProviderModels,
     provider: LLMProvider,
+    fingerprint: string,
   ): Promise<ProviderModelsResult> => {
-    const request = resolveProvider(provider).models.getSupportedModels()
-      .then(async (models) => {
-        const entry = await setCacheEntry(provider, models);
+    const cacheKey = buildCacheKey(provider, fingerprint);
+    const request = models.getSupportedModels()
+      .then(async (catalog) => {
+        const entry = await setCacheEntry(provider, catalog.fingerprint, catalog.models, catalog.cacheable);
         return {
-          models,
+          models: catalog.models,
           cache: toProviderModelsCacheInfo(entry, 'fresh'),
         };
       })
       .finally(() => {
-        pendingRequests.delete(provider);
+        pendingRequests.delete(cacheKey);
       });
 
-    pendingRequests.set(provider, request);
+    pendingRequests.set(cacheKey, request);
     return request;
   };
 
   const loadDirectModels = (
+    models: IProviderModels,
     provider: LLMProvider,
   ): Promise<ProviderModelsResult> => {
-    const request = resolveProvider(provider).models.getSupportedModels()
-      .then((models) => {
+    const cacheKey = buildCacheKey(provider, '');
+    const request = models.getSupportedModels()
+      .then((catalog) => {
         const currentTime = now();
         return {
-          models,
+          models: catalog.models,
           cache: {
             updatedAt: new Date(currentTime).toISOString(),
             expiresAt: new Date(currentTime).toISOString(),
@@ -254,10 +278,10 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
         };
       })
       .finally(() => {
-        pendingRequests.delete(provider);
+        pendingRequests.delete(cacheKey);
       });
 
-    pendingRequests.set(provider, request);
+    pendingRequests.set(cacheKey, request);
     return request;
   };
 
@@ -265,47 +289,56 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     provider: LLMProvider,
     options: ProviderModelsOptions = {},
   ): Promise<ProviderModelsResult> => {
+    await assertProviderAuthenticated(provider);
+    const models = resolveProvider(provider).models;
     if (UNCACHED_PROVIDERS.has(provider)) {
-      const pendingRequest = pendingRequests.get(provider);
+      const pendingRequest = pendingRequests.get(buildCacheKey(provider, ''));
       if (pendingRequest) {
         return pendingRequest;
       }
 
-      return loadDirectModels(provider);
+      return loadDirectModels(models, provider);
     }
+
+    // Precompute the configuration-driven fingerprint so the cache lookup uses
+    // the same key catalog writes do. Unconfigured providers (or facets without
+    // the method) return an empty fingerprint, which keeps the key equivalent
+    // to the previous provider-only key.
+    const fingerprint = models.getCachedCatalogFingerprint?.() ?? '';
+    const cacheKey = buildCacheKey(provider, fingerprint);
 
     if (options.bypassCache) {
-      const pendingRequest = pendingRequests.get(provider);
+      const pendingRequest = pendingRequests.get(cacheKey);
       if (pendingRequest) {
         return pendingRequest;
       }
 
-      return loadAndCacheModels(provider);
+      return loadAndCacheModels(models, provider, fingerprint);
     }
 
-    const cachedModels = pruneExpiredMemoryEntry(provider, now(), 'memory');
-    if (cachedModels) {
-      return cachedModels;
-    }
-
-    const pendingRequest = pendingRequests.get(provider);
+    const pendingRequest = pendingRequests.get(cacheKey);
     if (pendingRequest) {
       return pendingRequest;
     }
 
+    const cachedModels = pruneExpiredMemoryEntry(cacheKey, now(), 'memory');
+    if (cachedModels) {
+      return cachedModels;
+    }
+
     await loadPersistedCache();
 
-    const persistedModels = pruneExpiredMemoryEntry(provider, now(), 'disk');
+    const persistedModels = pruneExpiredMemoryEntry(cacheKey, now(), 'disk');
     if (persistedModels) {
       return persistedModels;
     }
 
-    const postLoadPendingRequest = pendingRequests.get(provider);
+    const postLoadPendingRequest = pendingRequests.get(cacheKey);
     if (postLoadPendingRequest) {
       return postLoadPendingRequest;
     }
 
-    return loadAndCacheModels(provider);
+    return loadAndCacheModels(models, provider, fingerprint);
   };
 
   const getCurrentActiveModel = async (
@@ -327,11 +360,12 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
    * than treated as an error: the client keeps its own pending selection and
    * the value lands on the row with the first send.
    */
-  const setSessionModel = (
+  const setSessionModel = async (
     provider: LLMProvider,
     sessionId: string,
     model: string,
-  ): ProviderSessionModel | null => {
+  ): Promise<ProviderSessionModel | null> => {
+    await assertProviderAuthenticated(provider);
     const normalizedSessionId = sessionId.trim();
     const normalizedModel = model.trim();
     if (!normalizedSessionId || !normalizedModel) {
@@ -447,6 +481,33 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     return recordedModel || normalizedRequestedModel || undefined;
   };
 
+  /**
+   * Resolves the model input for one provider run without provider-id policy.
+   *
+   * Explicit caller choices always win. An omitted choice loads the selected
+   * provider's catalog only when its model facet requests catalog-default
+   * injection; otherwise the runtime/CLI receives `undefined` and owns its
+   * native default selection.
+   */
+  const resolveRunModel = async (
+    provider: LLMProvider,
+    requestedModel?: string | null,
+  ): Promise<string | undefined> => {
+    const normalizedRequestedModel = typeof requestedModel === 'string'
+      ? requestedModel.trim()
+      : '';
+    if (normalizedRequestedModel) {
+      return normalizedRequestedModel;
+    }
+
+    const models = resolveProvider(provider).models;
+    if (models.usesCatalogDefaultWhenModelOmitted !== true) {
+      return undefined;
+    }
+
+    return (await getProviderModels(provider)).models.DEFAULT;
+  };
+
   const clearCache = (): void => {
     memoryCache.clear();
     pendingRequests.clear();
@@ -459,6 +520,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     setSessionModel,
     resolveSessionModel,
     resolveResumeModel,
+    resolveRunModel,
     clearCache,
   };
 };

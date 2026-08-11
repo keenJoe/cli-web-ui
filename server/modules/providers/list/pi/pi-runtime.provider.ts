@@ -9,21 +9,26 @@
  * - Treat `agent_settled` as the only success terminal; a close before it fails
  *   with `ERR-PI-RUN-FAILED`; an illegal payload on a known event fails with
  *   `ERR-PI-RPC-PROTOCOL`; unknown events are ignored (debug-logged).
- * - Support abort: send `{type:'abort'}` (client.abort()), wait a bounded grace
- *   window for `agent_settled`, then force-kill and settle as aborted. Process
- *   ownership is tracked by runId (not sessionId) so aborting one run never
- *   touches another run of the same session.
+ * - Observe the coordinator-owned AbortSignal: send `{type:'abort'}`
+ *   (`client.abort()`), wait a bounded grace window for `agent_settled`, then
+ *   force-kill and return an aborted outcome. All lifecycle state is run-local,
+ *   so cancelling one generation cannot affect another run of the same session.
  */
 import { randomUUID } from 'node:crypto';
 
 import type { RpcClientOptions, RpcSessionState } from '@earendil-works/pi-coding-agent';
 
-import { createCompleteMessage, createNormalizedMessage, AppError } from '@/shared/utils.js';
 import type {
-  AnyRecord,
+  IProviderEventSink,
+  IProviderRuntime,
+} from '@/shared/interfaces.js';
+import type {
+  ProviderRunEvent,
+  ProviderRunOutcome,
+  ProviderRunRequest,
   ProviderRuntimeContext,
-  ProviderRuntimeWriter,
 } from '@/shared/types.js';
+import { createNormalizedMessage, AppError } from '@/shared/utils.js';
 
 import { PiRpcClient, type PiRpcClientDeps } from './pi-rpc-client.provider.js';
 
@@ -54,6 +59,7 @@ export type NormalizedPiEvent =
   | { kind: 'thinking_end'; contentIndex: number; content: string }
   | { kind: 'tool_use'; toolId: string; toolName: string; toolInput: unknown }
   | { kind: 'tool_result'; toolId: string; toolName: string; content: string; isError: boolean }
+  | { kind: 'error'; content: string }
   | { kind: 'status'; status: string };
 
 type ActiveThinkingBlock = {
@@ -91,19 +97,6 @@ export type CreatePiRuntimeRpc = (
 /** Default factory: the real {@link PiRpcClient} (spawns `pi --mode rpc --no-extensions`). */
 export const defaultCreatePiRuntimeRpc: CreatePiRuntimeRpc = (options, deps) =>
   new PiRpcClient(options, deps);
-
-/** Terminal outcome of a single run. */
-export interface PiRunOutcome {
-  status: 'settled' | 'failed' | 'aborted';
-  sessionId: string | null;
-  errorCode?: 'ERR-PI-RUN-FAILED' | 'ERR-PI-RPC-PROTOCOL';
-}
-
-interface ActiveRun {
-  runId: string;
-  sessionId: string | null;
-  abort(): void;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -239,6 +232,23 @@ export function mapPiEvent(event: unknown): NormalizedPiEvent | null {
       };
     }
 
+    case 'message_end': {
+      // Pi reports upstream failures (400 bad request, 429 rate limit, ...) on
+      // the finalized assistant message rather than as a dedicated error event.
+      // Without this the turn produces no visible output at all: the model
+      // emitted no deltas, and `agent_settled` still arrives once Pi exhausts
+      // its retries, so the run would look like a silent no-op.
+      const message = event.message;
+      if (!isRecord(message) || message.stopReason !== 'error') {
+        return null;
+      }
+
+      const errorMessage = typeof message.errorMessage === 'string'
+        ? message.errorMessage.trim()
+        : '';
+      return { kind: 'error', content: errorMessage || 'ERR-PI-UPSTREAM' };
+    }
+
     case 'turn_end':
       return { kind: 'status', status: 'turn_end' };
 
@@ -264,13 +274,13 @@ export function isSettledEvent(event: unknown): boolean {
 }
 
 function buildRpcClientOptions(
-  options: AnyRecord,
+  request: ProviderRunRequest,
   nativeSessionId: string | null,
 ): RpcClientOptions {
   const rpcOptions: RpcClientOptions = {
-    cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
+    cwd: request.cwd,
   };
-  const model = typeof options.model === 'string' ? options.model.trim() : '';
+  const model = request.model?.trim() ?? '';
   const separatorIndex = model.indexOf('/');
   if (separatorIndex > 0 && separatorIndex < model.length - 1) {
     rpcOptions.provider = model.slice(0, separatorIndex);
@@ -283,7 +293,7 @@ function buildRpcClientOptions(
   if (nativeSessionId) {
     args.push('--session-id', nativeSessionId);
   }
-  const effort = typeof options.effort === 'string' ? options.effort.trim() : '';
+  const effort = request.effort?.trim() ?? '';
   if (effort && effort !== 'default') {
     args.push('--thinking', effort);
   }
@@ -305,36 +315,32 @@ export interface PiRuntimeDeps {
  * Builds the Pi runtime. `deps` supplies the RPC-client factory (a stub in
  * tests) and the abort grace window.
  */
-export function createPiRuntime(deps: PiRuntimeDeps = {}) {
+export function createPiRuntime(deps: PiRuntimeDeps = {}): IProviderRuntime {
   const createRpcClient = deps.createRpcClient ?? defaultCreatePiRuntimeRpc;
   const abortGraceMs = deps.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS;
   const thinkingFlushMs = Math.max(0, deps.thinkingFlushMs ?? DEFAULT_THINKING_FLUSH_MS);
-  const activeRuns = new Map<string, ActiveRun>();
 
   async function run(
-    command: string,
-    options: AnyRecord,
-    writer: ProviderRuntimeWriter,
-    context: ProviderRuntimeContext,
-  ): Promise<PiRunOutcome> {
-    const runId: string = typeof options.runId === 'string' ? options.runId : randomUUID();
-    const appSessionId: string | null =
-      typeof options.sessionId === 'string' ? options.sessionId : null;
-    const images = Array.isArray(options.images) ? (options.images as unknown[]) : undefined;
-    const existingNativeSessionId = context.resolveProviderSessionId(appSessionId);
-    const requestedNativeSessionId = existingNativeSessionId ?? appSessionId;
+    request: ProviderRunRequest,
+    sink: IProviderEventSink,
+    _context: ProviderRuntimeContext,
+    signal: AbortSignal,
+  ): Promise<ProviderRunOutcome> {
+    const images = request.images ? [...request.images] : undefined;
+    const requestedNativeSessionId = request.providerSessionId;
 
     let state: PiRuntimeState = 'SPAWNING';
     let settled = false;
     let aborting = false;
-    let boundSessionId: string | null = appSessionId;
-    let firstLiveEventSent = false;
+    let boundSessionId = request.providerSessionId;
     const activeThinkingBlocks = new Map<number, ActiveThinkingBlock>();
 
-    const rpc = createRpcClient(buildRpcClientOptions(options, requestedNativeSessionId));
+    const rpc = createRpcClient(buildRpcClientOptions(request, requestedNativeSessionId));
 
-    return new Promise<PiRunOutcome>((resolve) => {
+    return new Promise<ProviderRunOutcome>((resolve) => {
       let abortTimer: NodeJS.Timeout | undefined;
+      let unsubscribeEvents: (() => void) | undefined;
+      let unsubscribeClose: (() => void) | undefined;
 
       const createThinkingBlock = (contentIndex: number): ActiveThinkingBlock => {
         const existing = activeThinkingBlocks.get(contentIndex);
@@ -363,6 +369,9 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}) {
           clearTimeout(block.flushTimer);
           block.flushTimer = undefined;
         }
+        if (aborting) {
+          return;
+        }
         if (
           (!block.content && (isStreaming || !block.lastSentContent))
           || (isStreaming && block.content === block.lastSentContent)
@@ -371,20 +380,19 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}) {
         }
 
         state = 'STREAMING';
-        firstLiveEventSent = true;
-        writer.send(
+        sink.emit(
           createNormalizedMessage({
             id: block.id,
             kind: 'thinking',
             provider: 'pi',
-            sessionId: boundSessionId ?? null,
+            sessionId: request.appSessionId,
             timestamp: block.timestamp,
             content: block.content,
             isStreaming,
             duration: isStreaming
               ? undefined
               : Math.max(1, Math.ceil((Date.now() - block.startedAtMs) / 1000)),
-          }),
+          }) as ProviderRunEvent,
         );
         block.lastSentContent = block.content;
       };
@@ -430,54 +438,31 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}) {
         }
       };
 
-      const finish = (outcome: PiRunOutcome, closeRpc = true): void => {
+      const finish = (
+        outcome: ProviderRunOutcome,
+        closeGraceMs = RUN_CLOSE_GRACE_MS,
+      ): void => {
         if (settled) return;
-        finalizeAllThinkingBlocks();
         settled = true;
+        finalizeAllThinkingBlocks();
         state = 'SETTLED';
         if (abortTimer) clearTimeout(abortTimer);
-        activeRuns.delete(runId);
+        signal.removeEventListener('abort', beginAbort);
+        unsubscribeEvents?.();
+        unsubscribeClose?.();
 
-        if (outcome.status === 'settled') {
-          writer.send(
-            createCompleteMessage({
-              provider: 'pi',
-              sessionId: outcome.sessionId,
-              exitCode: 0,
-            }),
-          );
-        } else if (outcome.status === 'aborted') {
-          writer.send(
-            createCompleteMessage({
-              provider: 'pi',
-              sessionId: outcome.sessionId,
-              exitCode: null,
-              aborted: true,
-            }),
-          );
-        } else {
-          writer.send(
+        if (outcome.status === 'failed') {
+          sink.emit(
             createNormalizedMessage({
               kind: 'error',
               provider: 'pi',
-              sessionId: outcome.sessionId ?? null,
+              sessionId: request.appSessionId,
               content: outcome.errorCode ?? 'ERR-PI-RUN-FAILED',
               code: outcome.errorCode,
-            }),
-          );
-          writer.send(
-            createCompleteMessage({
-              provider: 'pi',
-              sessionId: outcome.sessionId,
-              exitCode: 1,
-            }),
+            }) as ProviderRunEvent,
           );
         }
-        if (closeRpc) {
-          void rpc.close(RUN_CLOSE_GRACE_MS).finally(() => resolve(outcome));
-        } else {
-          resolve(outcome);
-        }
+        void rpc.close(closeGraceMs).finally(() => resolve(outcome));
       };
 
       const beginAbort = (): void => {
@@ -487,24 +472,24 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}) {
         // force-kill. Either path settles the run as aborted exactly once.
         void rpc.abort().catch(() => undefined);
         abortTimer = setTimeout(() => {
-          void rpc.close(0).finally(() => {
-            finish({ status: 'aborted', sessionId: boundSessionId }, false);
-          });
+          finish({
+            status: 'aborted',
+            providerSessionId: boundSessionId,
+            exitCode: 1,
+          }, 0);
         }, abortGraceMs);
       };
 
-      activeRuns.set(runId, { runId, sessionId: appSessionId, abort: beginAbort });
-
-      const signal: AbortSignal | undefined =
-        options.signal instanceof AbortSignal ? options.signal : undefined;
-      if (signal) {
-        if (signal.aborted) {
-          // Abort before we even start: settle immediately as aborted.
-          queueMicrotask(() => finish({ status: 'aborted', sessionId: boundSessionId }));
-          return;
-        }
-        signal.addEventListener('abort', beginAbort, { once: true });
+      if (signal.aborted) {
+        // Abort before we even start: settle immediately as aborted.
+        queueMicrotask(() => finish({
+          status: 'aborted',
+          providerSessionId: boundSessionId,
+          exitCode: 1,
+        }));
+        return;
       }
+      signal.addEventListener('abort', beginAbort, { once: true });
 
       const handleEvent = (event: unknown): void => {
         // Once a terminal outcome is reached (settled/aborted/failed) any late
@@ -516,9 +501,21 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}) {
           // effect, not a successful turn.
           finish(
             aborting
-              ? { status: 'aborted', sessionId: boundSessionId }
-              : { status: 'settled', sessionId: boundSessionId },
+              ? {
+                status: 'aborted',
+                providerSessionId: boundSessionId,
+                exitCode: 1,
+              }
+              : {
+                status: 'completed',
+                providerSessionId: boundSessionId,
+                exitCode: 0,
+              },
           );
+          return;
+        }
+
+        if (aborting) {
           return;
         }
 
@@ -526,7 +523,12 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}) {
         try {
           normalized = mapPiEvent(event);
         } catch {
-          finish({ status: 'failed', sessionId: boundSessionId, errorCode: 'ERR-PI-RPC-PROTOCOL' });
+          finish({
+            status: 'failed',
+            providerSessionId: boundSessionId,
+            exitCode: 1,
+            errorCode: 'ERR-PI-RPC-PROTOCOL',
+          });
           return;
         }
 
@@ -562,13 +564,12 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}) {
         finalizeAllThinkingBlocks();
 
         state = 'STREAMING';
-        firstLiveEventSent = true;
-        writer.send(
+        sink.emit(
           createNormalizedMessage({
             ...normalized,
             provider: 'pi',
-            sessionId: boundSessionId ?? null,
-          }),
+            sessionId: request.appSessionId,
+          }) as ProviderRunEvent,
         );
       };
 
@@ -576,74 +577,81 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}) {
       void (async () => {
         try {
           await rpc.start();
-          if (settled) return;
+          if (settled || aborting) return;
 
           state = 'REQUESTING_STATE';
           const rpcState = await rpc.getState();
-          if (settled) return;
+          if (settled || aborting) return;
 
           state = 'BINDING_SESSION';
-          bindSession(rpcState);
+          if (!bindSession(rpcState)) return;
 
-          rpc.onEvent(handleEvent);
+          unsubscribeEvents = rpc.onEvent(handleEvent);
           if (rpc.onClose) {
-            rpc.onClose(() => {
+            unsubscribeClose = rpc.onClose(() => {
               if (settled || aborting) return;
               // Process exited before agent_settled: never report success.
               finish({
                 status: 'failed',
-                sessionId: boundSessionId,
+                providerSessionId: boundSessionId,
+                exitCode: 1,
                 errorCode: 'ERR-PI-RUN-FAILED',
               });
             });
           }
 
           state = 'PROMPTING';
-          await rpc.prompt(command, images);
+          await rpc.prompt(request.command, images);
         } catch {
           if (settled || aborting) return;
           // Process closed / start failed before agent_settled.
-          finish({ status: 'failed', sessionId: boundSessionId, errorCode: 'ERR-PI-RUN-FAILED' });
+          finish({
+            status: 'failed',
+            providerSessionId: boundSessionId,
+            exitCode: 1,
+            errorCode: 'ERR-PI-RUN-FAILED',
+          });
         }
       })();
 
-      function bindSession(rpcState: RpcSessionState): void {
+      function bindSession(rpcState: RpcSessionState): boolean {
         const nativeId = typeof rpcState?.sessionId === 'string' ? rpcState.sessionId : null;
-        if (!nativeId) return;
+        if (!nativeId) {
+          finish({
+            status: 'failed',
+            providerSessionId: boundSessionId,
+            exitCode: 1,
+            errorCode: 'ERR-PI-RPC-PROTOCOL',
+          });
+          return false;
+        }
+
+        if (boundSessionId !== null) {
+          if (boundSessionId !== nativeId) {
+            finish({
+              status: 'failed',
+              providerSessionId: boundSessionId,
+              exitCode: 1,
+              errorCode: 'ERR-PI-RPC-PROTOCOL',
+            });
+            return false;
+          }
+          return true;
+        }
 
         boundSessionId = nativeId;
-
-        if (writer.setSessionId) writer.setSessionId(nativeId);
-
-        // Only emit a fresh binding when the app session was not already mapped
-        // to a native id (avoids a duplicate bind on the second turn).
-        if (!existingNativeSessionId && !firstLiveEventSent) {
-          writer.send(
-            createNormalizedMessage({
-              kind: 'session_created',
-              provider: 'pi',
-              sessionId: nativeId,
-              newSessionId: nativeId,
-            }),
-          );
-        }
+        sink.bindProviderSession({
+          providerSessionId: nativeId,
+          artifactPath: typeof rpcState.sessionFile === 'string'
+            ? rpcState.sessionFile
+            : undefined,
+        });
+        return true;
       }
     });
   }
 
-  function abort(sessionId: string): boolean {
-    let aborted = false;
-    // Ownership is by runId; find the run(s) belonging to this app session.
-    for (const active of activeRuns.values()) {
-      if (active.sessionId === sessionId) {
-        active.abort();
-        aborted = true;
-      }
-    }
-    return aborted;
-  }
-
-  return { run, abort };
+  return { run };
 }
 
 /** Default runtime instance used by the provider registry. */

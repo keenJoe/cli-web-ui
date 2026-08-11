@@ -21,7 +21,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = databasePath;
-  await initializeDatabase();
+  await initializeDatabase([]);
 
   try {
     await runTest();
@@ -39,7 +39,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 test('notification payload uses the app session id for a provider session id', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('app-session-1', 'claude', '/workspace/demo');
-    sessionsDb.assignProviderSessionId('app-session-1', 'claude-native-1');
+    sessionsDb.assignProviderSessionId('app-session-1', 'claude-native-1', 'claude');
 
     const payload = buildNotificationPayload({
       provider: 'claude',

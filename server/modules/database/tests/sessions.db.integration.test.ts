@@ -15,7 +15,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = databasePath;
-  await initializeDatabase();
+  await initializeDatabase([]);
 
   try {
     await runTest();

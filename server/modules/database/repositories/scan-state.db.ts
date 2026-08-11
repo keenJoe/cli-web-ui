@@ -5,15 +5,15 @@ type ScanStateRow = {
 };
 
 export const scanStateDb = {
-    getLastScannedAt() {
+    getLastScannedAt(provider: string) {
         const db = getConnection();
 
         const row = db
-            .prepare(`SELECT last_scanned_at FROM scan_state WHERE id = 1`)
-            .get() as ScanStateRow;
+            .prepare(`SELECT last_scanned_at FROM provider_scan_state WHERE provider = ?`)
+            .get(provider) as ScanStateRow;
 
         if (!row) {
-            return null; // Before any scan, the row is undefined.
+            return null; // Before the provider's first scan, the row is undefined.
         }
 
         let lastScannedDate: Date | null = null;
@@ -28,15 +28,15 @@ export const scanStateDb = {
         return lastScannedDate;
     },
 
-    updateLastScannedAt(scannedAt: Date = new Date()) {
+    updateLastScannedAt(provider: string, scannedAt: Date = new Date()) {
         const db = getConnection();
         const sqliteTimestamp = scannedAt.toISOString().slice(0, 19).replace('T', ' ');
 
         db.prepare(`
-            INSERT INTO scan_state (id, last_scanned_at)
-            VALUES (1, ?)
-            ON CONFLICT (id)
+            INSERT INTO provider_scan_state (provider, last_scanned_at)
+            VALUES (?, ?)
+            ON CONFLICT (provider)
             DO UPDATE SET last_scanned_at = excluded.last_scanned_at
-        `).run(sqliteTimestamp);
+        `).run(provider, sqliteTimestamp);
     }
 };

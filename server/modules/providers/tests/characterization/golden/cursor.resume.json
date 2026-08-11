@@ -1,0 +1,20 @@
+{
+  "contextCalls": [
+    {
+      "call": "resolveProviderSessionId",
+      "args": [
+        "app-session-cursor"
+      ]
+    },
+    {
+      "call": "resolveResumeModel",
+      "args": [
+        "app-session-cursor",
+        "composer-1"
+      ]
+    }
+  ],
+  "events": [],
+  "boundSessionIds": [],
+  "sessionCreatedEvents": 0
+}

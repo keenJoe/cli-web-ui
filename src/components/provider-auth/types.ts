@@ -1,6 +1,8 @@
 import type { LLMProvider } from '../../types/app';
+import { PROVIDER_IDS } from '../llm-logo-provider/providerBranding';
 
 export type ProviderAuthStatus = {
+  installed: boolean;
   authenticated: boolean;
   email: string | null;
   method: string | null;
@@ -10,20 +12,19 @@ export type ProviderAuthStatus = {
 
 export type ProviderAuthStatusMap = Record<LLMProvider, ProviderAuthStatus>;
 
-export const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'pi'];
+export const CLI_PROVIDERS: LLMProvider[] = PROVIDER_IDS;
 
-export const PROVIDER_AUTH_STATUS_ENDPOINTS: Record<LLMProvider, string> = {
-  claude: '/api/providers/claude/auth/status',
-  cursor: '/api/providers/cursor/auth/status',
-  codex: '/api/providers/codex/auth/status',
-  opencode: '/api/providers/opencode/auth/status',
-  pi: '/api/providers/pi/auth/status',
-};
+export const PROVIDER_AUTH_STATUS_ENDPOINTS = Object.fromEntries(
+  PROVIDER_IDS.map((provider) => [provider, `/api/providers/${provider}/auth/status`]),
+) as Record<LLMProvider, string>;
 
-export const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusMap => ({
-  claude: { authenticated: false, email: null, method: null, error: null, loading },
-  cursor: { authenticated: false, email: null, method: null, error: null, loading },
-  codex: { authenticated: false, email: null, method: null, error: null, loading },
-  opencode: { authenticated: false, email: null, method: null, error: null, loading },
-  pi: { authenticated: false, email: null, method: null, error: null, loading },
-});
+export const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusMap => (
+  Object.fromEntries(PROVIDER_IDS.map((provider) => [provider, {
+    installed: false,
+    authenticated: false,
+    email: null,
+    method: null,
+    error: null,
+    loading,
+  }])) as ProviderAuthStatusMap
+);

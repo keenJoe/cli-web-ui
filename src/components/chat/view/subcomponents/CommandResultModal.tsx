@@ -18,6 +18,7 @@ import {
 
 import { Badge, Button, Dialog, DialogContent, DialogTitle, Input } from '../../../../shared/view/ui';
 import type { LLMProvider, ProviderModelsCacheInfo, ProviderModelsDefinition } from '../../../../types/app';
+import { getProviderDisplayName } from '../../../llm-logo-provider/providerBranding';
 import type {
   CommandModalPayload,
   CostCommandData,
@@ -34,6 +35,8 @@ type CommandResultModalProps = {
   providerModelsRefreshing: boolean;
   onHardRefreshProviderModels: () => void;
   currentSessionId: string | null;
+  /** Set when the active provider is definitively unauthenticated: the model selector renders nothing. */
+  modelMenuHidden: boolean;
   onSelectProviderModel: (
     provider: LLMProvider,
     model: string,
@@ -56,14 +59,6 @@ type ModelOption = {
   description?: string;
 };
 
-const PROVIDER_LABELS: Record<string, string> = {
-  claude: 'Claude',
-  cursor: 'Cursor',
-  codex: 'Codex',
-  opencode: 'OpenCode',
-  pi: 'Pi',
-};
-
 const FALLBACK_COMMANDS: CommandEntry[] = [
   { name: '/models', description: 'Browse available models for the active provider.' },
   { name: '/cost', description: 'Review token usage for the active session.' },
@@ -78,7 +73,7 @@ const getProviderLabel = (provider: string | undefined, fallback = 'Unknown') =>
     return fallback;
   }
 
-  return PROVIDER_LABELS[provider] || provider;
+  return getProviderDisplayName(provider);
 };
 
 const formatNumber = (value: number) => {
@@ -346,7 +341,7 @@ function ModelsContent({
                   onClick={() => handleSelectModel(option.value)}
                   disabled={Boolean(changingModel)}
                   aria-label={`Select model ${option.value}`}
-                  className={`settings-content-enter group flex min-h-[4rem] flex-col rounded-2xl border p-3 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 ${
+                  className={`settings-content-enter group flex min-h-16 flex-col rounded-2xl border p-3 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 ${
                     isCurrent
                       ? 'border-primary/45 bg-primary/10'
                       : isPendingSelection
@@ -521,6 +516,7 @@ export default function CommandResultModal({
   providerModelsRefreshing,
   onHardRefreshProviderModels,
   currentSessionId,
+  modelMenuHidden,
   onSelectProviderModel,
 }: CommandResultModalProps) {
   const isOpen = Boolean(payload);
@@ -602,7 +598,7 @@ export default function CommandResultModal({
 
         <div className="settings-content-enter min-h-0 flex-1 overflow-hidden px-4 py-4 sm:px-6 sm:py-5">
           {payload?.kind === 'help' && <HelpContent data={payload.data as HelpCommandData} />}
-          {payload?.kind === 'models' && (
+          {payload?.kind === 'models' && !modelMenuHidden && (
             <ModelsContent
               data={payload.data as ModelCommandData}
               providerModelCatalog={providerModelCatalog}

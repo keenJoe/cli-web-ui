@@ -130,6 +130,16 @@ CREATE TABLE IF NOT EXISTS scan_state (
 );
 `;
 
+export const PROVIDER_SCAN_STATE_SQL = `
+CREATE TABLE IF NOT EXISTS provider_scan_state (
+  -- Provider id, deliberately open-valued: no CHECK constraint listing the
+  -- known providers, because that would make the schema a central file every
+  -- new provider has to edit.
+  provider TEXT PRIMARY KEY,
+  last_scanned_at TIMESTAMP NULL
+);
+`;
+
 export const APP_CONFIG_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS app_config (
     key TEXT PRIMARY KEY,

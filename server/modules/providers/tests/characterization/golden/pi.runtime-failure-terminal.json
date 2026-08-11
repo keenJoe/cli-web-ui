@@ -1,0 +1,40 @@
+{
+  "outcome": {
+    "status": "failed",
+    "sessionId": "native-pi-1",
+    "errorCode": "ERR-PI-RUN-FAILED"
+  },
+  "events": [
+    {
+      "kind": "session_created",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "newSessionId": "native-pi-1",
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    },
+    {
+      "kind": "error",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "content": "ERR-PI-RUN-FAILED",
+      "code": "ERR-PI-RUN-FAILED",
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    },
+    {
+      "kind": "complete",
+      "provider": "pi",
+      "sessionId": "native-pi-1",
+      "actualSessionId": "native-pi-1",
+      "exitCode": 1,
+      "success": false,
+      "aborted": false,
+      "id": "<generated-id>",
+      "timestamp": "<generated-timestamp>"
+    }
+  ],
+  "boundSessionIds": [
+    "native-pi-1"
+  ]
+}

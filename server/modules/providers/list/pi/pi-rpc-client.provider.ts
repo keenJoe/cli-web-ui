@@ -67,6 +67,25 @@ export interface PiRpcClientDeps {
 // RpcClient itself always adds `--mode rpc`; only wrapper-owned flags belong here.
 const FIXED_ADDITIONAL_ARGS = ['--no-extensions'];
 
+/**
+ * Anthropic credentials Pi picks up from the environment.
+ *
+ * Pi treats either of these as "the Anthropic provider is configured" and adds
+ * its whole built-in Claude catalog to `getAvailableModels()`. The app exports
+ * them for its own Claude provider, and the Pi child inherits them, so the Pi
+ * model list ends up advertising Claude models the user never configured for
+ * Pi. Blanking them for the child keeps the Pi catalog equal to what
+ * `~/.pi/agent/models.json` actually declares.
+ */
+const SUPPRESSED_INHERITED_ENV = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'];
+
+/** Caller-supplied env wins, so an explicit credential still reaches Pi. */
+const buildChildEnv = (callerEnv?: Record<string, string>): Record<string, string> => ({
+  ...Object.fromEntries(SUPPRESSED_INHERITED_ENV.map((name) => [name, ''])),
+  ...callerEnv,
+});
+
+
 /** Default adapter wiring the official RpcClient to {@link UnderlyingRpcClient}. */
 const defaultDeps: PiRpcClientDeps = {
   createClient(options) {
@@ -110,7 +129,7 @@ export class PiRpcClient {
   }
 
   async start(): Promise<void> {
-    const { args, cliPath, ...rest } = this.options;
+    const { args, cliPath, env, ...rest } = this.options;
     const client = this.deps.createClient({
       ...rest,
       // The official RpcClient runs `node <cliPath> ...`, so cliPath MUST be a
@@ -118,6 +137,7 @@ export class PiRpcClient {
       // resolved package entry unless a caller explicitly overrides it.
       cliPath: cliPath ?? new PiPaths().getRpcCliEntry(),
       args: [...FIXED_ADDITIONAL_ARGS, ...(args ?? [])],
+      env: buildChildEnv(env),
     });
     this.client = client;
     await client.start();

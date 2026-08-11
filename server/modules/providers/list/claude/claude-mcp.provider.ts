@@ -13,9 +13,15 @@ import {
   writeJsonConfig,
 } from '@/shared/utils.js';
 
+/** ClaudeProvider uses this facet to read and persist Claude MCP server configuration. */
 export class ClaudeMcpProvider extends McpProvider {
   constructor() {
-    super('claude', ['user', 'local', 'project'], ['stdio', 'http', 'sse']);
+    super('claude', {
+      supportedScopes: ['user', 'local', 'project'],
+      supportedTransports: ['stdio', 'http', 'sse'],
+      supportsWorkingDirectory: false,
+      supportsEnvironmentVariableReferences: false,
+    });
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

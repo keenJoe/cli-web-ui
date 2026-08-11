@@ -17,7 +17,7 @@ import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
 import type { QueuedDraft } from '../../hooks/useChatComposerState';
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
 import type { PendingPermissionRequest, PermissionMode } from '../../types/types';
-import type { ProviderModelOption } from '../../../../types/app';
+import type { ProviderCapabilityStatus, ProviderModelOption } from '../../../../types/app';
 import {
   PromptInput,
   PromptInputHeader,
@@ -64,17 +64,21 @@ interface ChatComposerProps {
   activity: SessionActivity | null;
   isLoading: boolean;
   onAbortSession: () => void;
-  permissionMode: PermissionMode | string;
+  providerCapabilityStatus: ProviderCapabilityStatus;
+  permissionMode: PermissionMode | string | null;
   availablePermissionModes: (PermissionMode | string)[];
   onSelectPermissionMode: (mode: PermissionMode | string) => void;
   providerLabel: string;
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
-  model: string;
+  model: string | null;
   availableModelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
+  /** Set when the active provider is definitively unauthenticated: the model menu renders nothing. */
+  modelMenuHidden: boolean;
+  supportsTokenUsage: boolean;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
   slashCommandsCount: number;
@@ -128,6 +132,7 @@ export default function ChatComposer({
   activity,
   isLoading,
   onAbortSession,
+  providerCapabilityStatus,
   permissionMode,
   availablePermissionModes,
   onSelectPermissionMode,
@@ -139,6 +144,8 @@ export default function ChatComposer({
   availableModelOptions,
   onSelectModel,
   modelsLoading,
+  modelMenuHidden,
+  supportsTokenUsage,
   tokenBudget,
   onShowTokenUsage,
   slashCommandsCount,
@@ -229,6 +236,7 @@ export default function ChatComposer({
 
   const hasQueuedDraft = Boolean(queuedDraft);
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
+  const isComposerReady = providerCapabilityStatus === 'ready' && Boolean(permissionMode) && Boolean(model);
   const submitHint = canQueueDraft
     ? hasQueuedDraft
       ? t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
@@ -389,11 +397,35 @@ export default function ChatComposer({
               <PaperclipIcon />
             </PromptInputButton>
 
+            <TokenUsageSummary
+              supported={supportsTokenUsage}
+              usage={tokenBudget}
+              onClick={onShowTokenUsage}
+            />
+
+            <ComposerModelMenu
+              capabilityStatus={providerCapabilityStatus}
+              effort={effort}
+              effortOptions={availableEffortOptions}
+              onSelectEffort={onSelectEffort}
+              model={model}
+              modelOptions={availableModelOptions}
+              onSelectModel={onSelectModel}
+              modelsLoading={modelsLoading}
+              hidden={modelMenuHidden}
+            />
+
+            <ComposerPermissionMenu
+              capabilityStatus={providerCapabilityStatus}
+              permissionMode={permissionMode}
+              permissionModes={availablePermissionModes}
+              onSelectPermissionMode={onSelectPermissionMode}
+              providerLabel={providerLabel}
+            />
+
             {onVoiceTranscript && voiceAvailable && (
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
             )}
-
-            <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
 
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}
@@ -419,7 +451,6 @@ export default function ChatComposer({
                 <XIcon />
               </PromptInputButton>
             )}
-
           </PromptInputTools>
 
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
@@ -430,23 +461,6 @@ export default function ChatComposer({
             >
               {submitHint}
             </div>
-
-            <ComposerModelMenu
-              effort={effort}
-              effortOptions={availableEffortOptions}
-              onSelectEffort={onSelectEffort}
-              model={model}
-              modelOptions={availableModelOptions}
-              onSelectModel={onSelectModel}
-              modelsLoading={modelsLoading}
-            />
-
-            <ComposerPermissionMenu
-              permissionMode={permissionMode}
-              permissionModes={availablePermissionModes}
-              onSelectPermissionMode={onSelectPermissionMode}
-              providerLabel={providerLabel}
-            />
 
             <PromptInputSubmit
               onClick={
@@ -465,13 +479,17 @@ export default function ChatComposer({
                       : undefined
               }
               disabled={
-                isLoading
-                  ? false
+                canQueueDraft
+                  ? !isComposerReady
+                  : isLoading
+                    ? false
                   : isRecording
                     ? false
                     : isTranscribing
                       ? true
-                      : !input.trim() && attachedFiles.length === 0
+                      : !isComposerReady
+                        ? true
+                        : !input.trim() && attachedFiles.length === 0
               }
               aria-label={submitAriaLabel}
               title={submitAriaLabel}

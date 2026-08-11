@@ -7,23 +7,22 @@ without guessing which files need to move.
 
 ## Current Provider Shape
 
-Every provider wrapper exposes seven facets:
+Every registered provider exposes the required `runtime`, `models`, `auth`,
+`sessions`, and `sessionSynchronizer` facets plus a static `descriptor`.
+Providers attach `mcp`, `skills`, and `usage` only when they actually support
+those capabilities. Missing optional facets are reported as
+`PROVIDER_CAPABILITY_UNSUPPORTED`; they must not be represented by empty-success
+implementations.
 
-- `runtime`
-- `models`
-- `auth`
-- `mcp`
-- `skills`
-- `sessions`
-- `sessionSynchronizer`
-
-These correspond to the shared interfaces in `server/shared/interfaces.ts`:
+The facets correspond to the shared interfaces in
+`server/shared/interfaces.ts`:
 
 - `IProviderRuntime`
 - `IProviderModels`
 - `IProviderAuth`
 - `IProviderMcp`
 - `IProviderSkills`
+- `IProviderUsage`
 - `IProviderSessions`
 - `IProviderSessionSynchronizer`
 
@@ -33,6 +32,7 @@ The services that consume them are:
 - `providerAuthService`
 - `providerMcpService`
 - `providerSkillsService`
+- `providerTokenUsageService`
 - `sessionsService`
 - `sessionSynchronizerService`
 
@@ -45,9 +45,10 @@ Current provider ids in this repo are:
 - `codex`
 - `cursor`
 - `opencode`
+- `pi`
 
-Those ids are mirrored in backend unions and frontend provider constants. If
-adding a new provider, update every place that hardcodes this list.
+Provider behavior is discovered through `providerRegistry`; application
+services must not maintain a second provider-id capability matrix.
 
 ## Current File Layout
 
@@ -56,7 +57,7 @@ Each provider lives under its own folder in `server/modules/providers/list/`:
 ```text
 server/modules/providers/list/<provider>/
   <provider>.provider.ts
-  <provider>-runtime.provider.js
+  <provider>-runtime.provider.ts
   <provider>-auth.provider.ts
   <provider>-models.provider.ts
   <provider>-mcp.provider.ts
@@ -65,7 +66,12 @@ server/modules/providers/list/<provider>/
   <provider>-session-synchronizer.provider.ts
 ```
 
-The existing provider folders are `claude`, `codex`, `cursor`, and `opencode`.
+The existing provider folders are `claude`, `codex`, `cursor`, `opencode`, and
+`pi`. Claude, Codex, Cursor, and OpenCode still have JavaScript runtimes behind
+the temporary `LegacyProviderRuntimeAdapter`; their finite migration and
+adapter deletion condition is tracked in
+`openspec/changes/refactor-provider-seams/legacy-runtime-adapter-exit.md`. Pi
+implements the typed runtime contract directly.
 
 Each provider wrapper owns its SDK/CLI runtime alongside its auth, model, and
 session facets. Runtime adapters receive registry-backed model and session
@@ -78,11 +84,12 @@ import the service from `server/modules/providers/index.ts`.
 
 | Facet | Responsibility | Base / Service |
 | --- | --- | --- |
-| `runtime` | Run and abort live SDK/CLI sessions | `IProviderRuntime` -> `providerRuntimeService` |
+| `runtime` | Emit non-terminal live events and return a typed run outcome | `IProviderRuntime` -> `ProviderRunCoordinator` |
 | `models` | Resolve supported and active models | `IProviderModels` -> `providerModelsService` |
 | `auth` | Report install/auth state for the provider runtime | `IProviderAuth` -> `providerAuthService` |
 | `mcp` | Read, list, write, and remove provider-native MCP config | `McpProvider` -> `providerMcpService` |
 | `skills` | Discover provider-native skill markdown files | `SkillsProvider` -> `providerSkillsService` |
+| `usage` | Calculate provider-native token usage when supported | `IProviderUsage` -> `providerTokenUsageService` |
 | `sessions` | Normalize live events and fetch session history | `IProviderSessions` -> `sessionsService` |
 | `sessionSynchronizer` | Scan transcript artifacts and upsert session metadata | `IProviderSessionSynchronizer` -> `sessionSynchronizerService` |
 
@@ -91,29 +98,60 @@ import the service from `server/modules/providers/index.ts`.
 - `sessions` handles runtime event normalization and history fetches.
 - `sessionSynchronizer` handles file-backed session indexing into `sessionsDb`.
 
+## Live Runtime Contract
+
+`providerRuntimeService` projects compatibility callers into a
+`ProviderRunRequest` and starts the run through `ProviderRunCoordinator`. The
+coordinator owns the generated run id, app/native identity binding,
+`AbortController`, active-run exclusion, and the single `complete` terminal.
+It supplies an `IProviderEventSink` that can express only non-terminal events.
+
+A direct typed runtime must:
+
+- resume only `request.providerSessionId`, never infer a native id from
+  `request.appSessionId`;
+- call `sink.bindProviderSession(...)` before its first live event when a new
+  native identity is discovered;
+- call `sink.emit(...)` only for non-terminal events;
+- observe the supplied `AbortSignal` and keep lifecycle state local to that run;
+- return one shared `ProviderRunOutcome` without sending `complete` or
+  `session_created`.
+
+The four legacy JavaScript runtimes are translated by
+`LegacyProviderRuntimeAdapter`. That adapter intercepts their legacy terminal
+messages and bridges cancellation during the staged TypeScript migration. New
+runtimes must implement `IProviderRuntime` directly and must not use the legacy
+adapter.
+
 ## How To Add A Provider
 
-1. Add the provider id everywhere it is part of the contract.
+1. Add the provider at the three central integration points.
 
-- Update `server/shared/types.ts` `LLMProvider`.
-- Update `src/types/app.ts` `LLMProvider` if the frontend should know about it.
-- Update `server/modules/providers/provider.routes.ts`.
-- Update `server/modules/agent/agent.routes.ts` if the provider is launchable from the agent runtime.
-- Update `server/index.ts` if the provider needs runtime boot or shutdown wiring.
-- Update the `PROVIDER_ORDER` list in `public/api-docs.html` if the provider should appear in the public API docs.
-- Update `src/components/chat/hooks/useChatProviderState.ts` and
-  `src/components/chat/view/subcomponents/ProviderSelectionEmptyState.tsx` if
-  the provider should be selectable in chat.
-- Update `src/components/provider-auth/view/ProviderLoginModal.tsx` if the
-  provider has a login/setup flow.
+- Add the id to `server/shared/types.ts` `LLMProvider`.
+- Import and register the provider definition in
+  `server/modules/providers/provider.registry.ts`.
+- Add its display metadata, logo, and setup copy to
+  `src/components/llm-logo-provider/providerBranding.tsx`; the frontend
+  `LLMProvider` type is derived from this map.
+
+These are the only central files for a normal provider addition. Provider
+routes, capability/usage/MCP services, watcher/synchronizer orchestration,
+Agent dispatch, `AbstractProvider`, and `server/index.ts` resolve providers and
+facets generically and must not gain provider-id branches.
 
 2. Create the wrapper class.
 
 - Add `server/modules/providers/list/<provider>/<provider>.provider.ts`.
-- Add `server/modules/providers/list/<provider>/<provider>-runtime.provider.js`
-  when the provider supports live SDK/CLI execution.
+- Add a TypeScript runtime under
+  `server/modules/providers/list/<provider>/<provider>-runtime.provider.ts`.
 - Extend `AbstractProvider`.
-- Expose readonly `auth`, `mcp`, `skills`, `sessions`, and `sessionSynchronizer`.
+- Expose required `descriptor`, `runtime`, `models`, `auth`, `sessions`, and
+  `sessionSynchronizer` facets.
+- Expose `mcp`, `skills`, and `usage` only when the provider supports them; do
+  not add empty adapters that return successful empty results.
+- Implement `IProviderRuntime` directly. `LegacyProviderRuntimeAdapter` exists
+  only for the four pre-existing JavaScript runtimes and is not an extension
+  point for new providers.
 - Call `super('<provider>')`.
 
 3. Implement auth.
@@ -123,7 +161,7 @@ import the service from `server/modules/providers/index.ts`.
 - Keep provider-specific credential discovery inside the auth provider.
 - If the provider has no auth step, return a stable unauthenticated or not-installed status instead of omitting the facet.
 
-4. Implement MCP.
+4. Implement MCP when supported.
 
 - Extend `McpProvider`.
 - Pass the supported scopes and transports to `super(...)`.
@@ -134,6 +172,9 @@ import the service from `server/modules/providers/index.ts`.
   - `normalizeServerConfig(...)`
 - Use the shared validation and normalization behavior from `McpProvider`.
 - Keep the provider-specific config format local to the provider implementation.
+- If MCP is unsupported, omit the facet; `ProviderRegistry.requireFacet`
+  returns `PROVIDER_CAPABILITY_UNSUPPORTED` for provider-specific requests and
+  aggregate reads skip that provider.
 
 Current MCP formats in this repo are:
 
@@ -144,7 +185,7 @@ Current MCP formats in this repo are:
 | Cursor | `.cursor/mcp.json` | `user`, `project` | `stdio`, `http` |
 | OpenCode | `~/.config/opencode/opencode.json` or `<workspace>/opencode.json` (`.jsonc` is read when present) | `user`, `project` | `stdio`, `http` |
 
-5. Implement skills.
+5. Implement skills when supported.
 
 - Extend `SkillsProvider`.
 - Implement `getSkillSources(workspacePath)`.
@@ -154,6 +195,7 @@ Current MCP formats in this repo are:
 - If `name` is missing, the parent directory name is used as a fallback.
 - Use `recursive: true` only when the provider stores skills in nested trees.
 - Keep the emitted `command` string aligned with the provider's real skill syntax.
+- If skills are unsupported, omit the facet instead of adding an empty implementation.
 
 Current skill discovery roots are:
 
@@ -197,8 +239,11 @@ Command forms currently used by the providers are:
   - `normalizeSessionName(...)`
   - `readFileTimestamps(...)`
 - Make the sync resilient to partial, malformed, or missing provider files.
-- The orchestration service runs all provider synchronizers and only advances
-  `scan_state.last_scanned_at` when every provider succeeds.
+- Implement `getWatchRoots()` so the watcher discovers storage paths through
+  the provider facet rather than a central path table.
+- The orchestration service maintains an independent `provider_scan_state`
+  cursor and advances it only when that provider succeeds; one provider's
+  failure does not block the others.
 
 Current session sync roots are:
 
@@ -212,25 +257,22 @@ Current session sync roots are:
 8. Register the provider.
 
 - Add the new provider class to `server/modules/providers/provider.registry.ts`.
-- Update `server/modules/providers/provider.routes.ts` provider parsing.
-- If the provider introduces a new service or lifecycle hook, export it from the module entrypoint that consumes providers.
+- Supply a valid descriptor whose `defaultPermissionMode` occurs in
+  `permissionModes`; invalid definitions fail during registry construction.
+- Do not update provider routes, Agent routes, capability services, watcher
+  services, or the server assembly root. They resolve the registered definition
+  and its facets generically.
 
-9. Wire runtime and UI surfaces outside the providers module when needed.
+9. Verify generic runtime and UI discovery.
 
-If the provider can run live chat sessions, update the runtime entrypoints too:
-
-- `server/modules/providers/list/<provider>/<provider>-runtime.provider.js`
-- `server/modules/providers/list/<provider>/<provider>.provider.ts`
-- `server/modules/agent/agent.routes.ts`
-- `server/index.ts`
-
-If the provider is visible in the UI, update:
-
-- provider model fallback files under `server/modules/providers/list/<provider>/`
-- `src/components/chat/hooks/useChatProviderState.ts`
-- `src/components/chat/view/subcomponents/ProviderSelectionEmptyState.tsx`
-- `src/components/provider-auth/view/ProviderLoginModal.tsx`
-- `src/components/mcp/constants.ts`
+- The provider's local model facet owns its catalog and omitted-model policy;
+  do not add frontend or Agent model fallback matrices.
+- The descriptor and optional facet presence drive capabilities, permission,
+  effort, MCP, skills, and usage surfaces without provider-specific UI branches.
+- The branding map from step 1 supplies the remaining static UI assets and copy.
+- A need to edit another central dispatcher or service means the provider is
+  introducing a new public contract and should be reviewed as an architecture
+  change, not treated as normal provider onboarding.
 
 ## Minimal Wrapper Template
 
@@ -238,30 +280,36 @@ If the provider is visible in the UI, update:
 import { AbstractProvider } from '@/modules/providers/shared/base/abstract.provider.js';
 import { <Provider>ProviderAuth } from './<provider>-auth.provider.js';
 import { <Provider>ProviderModels } from './<provider>-models.provider.js';
-import { <Provider>McpProvider } from './<provider>-mcp.provider.js';
-import { <provider>Runtime } from './<provider>-runtime.provider.js';
-import { <Provider>SkillsProvider } from './<provider>-skills.provider.js';
+import { <Provider>Runtime } from './<provider>-runtime.provider.js';
 import { <Provider>SessionsProvider } from './<provider>-sessions.provider.js';
 import { <Provider>SessionSynchronizer } from './<provider>-session-synchronizer.provider.js';
 import type {
   IProviderAuth,
-  IProviderMcp,
   IProviderModels,
   IProviderRuntime,
   IProviderSessionSynchronizer,
   IProviderSessions,
-  IProviderSkills,
+  ProviderDescriptor,
 } from '@/shared/interfaces.js';
 
 export class <Provider>Provider extends AbstractProvider {
-  readonly runtime: IProviderRuntime = <provider>Runtime;
+  readonly descriptor: ProviderDescriptor = {
+    permissionModes: ['default'],
+    defaultPermissionMode: 'default',
+    supportsImages: false,
+    supportsFiles: false,
+    supportsAbort: true,
+    supportsPermissionRequests: false,
+    supportsEffort: false,
+  };
+  readonly runtime: IProviderRuntime = new <Provider>Runtime();
   readonly models: IProviderModels = new <Provider>ProviderModels();
   readonly auth: IProviderAuth = new <Provider>ProviderAuth();
-  readonly mcp: IProviderMcp = new <Provider>McpProvider();
-  readonly skills: IProviderSkills = new <Provider>SkillsProvider();
   readonly sessions: IProviderSessions = new <Provider>SessionsProvider();
   readonly sessionSynchronizer: IProviderSessionSynchronizer =
     new <Provider>SessionSynchronizer();
+
+  // Add mcp, skills, or usage only when the provider supports that facet.
 
   constructor() {
     super('<provider>');
@@ -300,6 +348,10 @@ export class <Provider>SkillsProvider extends SkillsProvider {
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
 
 export class <Provider>SessionSynchronizer implements IProviderSessionSynchronizer {
+  getWatchRoots(): string[] {
+    return [];
+  }
+
   async synchronize(since?: Date): Promise<number> {
     return 0;
   }
@@ -319,26 +371,29 @@ Add a new provider "<provider>" using the current provider module architecture.
 
 Requirements:
 1) Create:
-    - server/modules/providers/list/<provider>/<provider>.provider.ts
-    - server/modules/providers/list/<provider>/<provider>-runtime.provider.js
+   - server/modules/providers/list/<provider>/<provider>.provider.ts
+   - server/modules/providers/list/<provider>/<provider>-runtime.provider.ts
    - server/modules/providers/list/<provider>/<provider>-auth.provider.ts
    - server/modules/providers/list/<provider>/<provider>-models.provider.ts
-   - server/modules/providers/list/<provider>/<provider>-mcp.provider.ts
-   - server/modules/providers/list/<provider>/<provider>-skills.provider.ts
    - server/modules/providers/list/<provider>/<provider>-sessions.provider.ts
    - server/modules/providers/list/<provider>/<provider>-session-synchronizer.provider.ts
-2) Register in:
-    - server/modules/providers/provider.registry.ts
-    - server/modules/providers/provider.routes.ts
+   Create MCP, skills, and usage facet files only when supported.
+2) Change exactly these central integration files:
    - server/shared/types.ts LLMProvider
-   - src/types/app.ts LLMProvider
-3) Mirror the nearest existing provider implementation for file naming, style,
-   and error handling.
-4) Implement skills support with SkillsProvider and the current skill roots.
-5) Implement session synchronization if the provider stores transcript files.
-6) Ensure sessions use unique ids, safe path handling, and correct pagination.
-7) Keep `sessions` and `sessionSynchronizer` separate.
-8) Run:
+   - server/modules/providers/provider.registry.ts
+   - src/components/llm-logo-provider/providerBranding.tsx
+   Do not add provider-id branches to routes, services, Agent dispatch, watcher,
+   synchronizer orchestration, or server/index.ts.
+3) Supply a valid ProviderDescriptor and implement IProviderRuntime directly;
+   do not use LegacyProviderRuntimeAdapter for new providers.
+4) Mirror the nearest existing provider implementation for file naming, style,
+   and error handling, while keeping unsupported facets absent.
+5) Implement session synchronization with getWatchRoots() and provider-owned
+   scan behavior if the provider stores transcript files.
+6) Ensure sessions use provider-qualified ids, safe path handling, and correct
+   pagination.
+7) Keep sessions and sessionSynchronizer separate.
+8) Run the provider contract/characterization tests plus:
    - npx eslint <touched files>
    - npx tsc --noEmit -p server/tsconfig.json
 ```
@@ -363,12 +418,15 @@ alongside the implementation.
 
 ## Common Mistakes
 
-- Adding provider files but forgetting `provider.registry.ts` or
-  `provider.routes.ts`.
-- Adding a live runtime without exposing it from the provider wrapper.
-- Updating backend provider ids but not `src/types/app.ts` or the frontend
-  provider constants.
-- Omitting `runtime`, `skills`, or `sessionSynchronizer` from the wrapper.
+- Adding provider files but forgetting one of the three central points:
+  backend `LLMProvider`, registry registration, or frontend branding.
+- Adding a live runtime without exposing its typed facet from the provider wrapper.
+- Adding provider-id branches to a route, capability service, watcher,
+  synchronizer orchestrator, Agent dispatcher, or server assembly root.
+- Omitting required `descriptor`, `runtime`, `models`, `auth`, `sessions`, or
+  `sessionSynchronizer` facets from the wrapper.
+- Publishing empty `mcp`, `skills`, or `usage` implementations instead of
+  leaving unsupported optional facets absent.
 - Returning duplicate normalized message ids for split content.
 - Treating `limit === 0` as unbounded history.
 - Building file paths from raw session ids without validation.
@@ -376,5 +434,3 @@ alongside the implementation.
 - Forgetting that Claude plugin skills are discovered differently from normal
   user/project skill folders.
 - Assuming one provider's MCP config file format works for the others.
-
-

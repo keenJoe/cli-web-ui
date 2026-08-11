@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 
 import type { PermissionMode } from '../../types/types';
+import type { ProviderCapabilityStatus } from '../../../../types/app';
 import { useComposerMenuAnchor } from '../../hooks/useComposerMenuAnchor';
 
 import {
@@ -71,7 +72,8 @@ const getAppearance = (mode: PermissionMode | string): ModeAppearance =>
   MODE_APPEARANCE[mode as PermissionMode] ?? UNKNOWN_MODE;
 
 interface ComposerPermissionMenuProps {
-  permissionMode: PermissionMode | string;
+  capabilityStatus: ProviderCapabilityStatus;
+  permissionMode: PermissionMode | string | null;
   /** Modes the active provider supports, in the order the backend reports them. */
   permissionModes: (PermissionMode | string)[];
   onSelectPermissionMode: (mode: PermissionMode | string) => void;
@@ -79,6 +81,7 @@ interface ComposerPermissionMenuProps {
 }
 
 export default function ComposerPermissionMenu({
+  capabilityStatus,
   permissionMode,
   permissionModes,
   onSelectPermissionMode,
@@ -89,8 +92,18 @@ export default function ComposerPermissionMenu({
   const close = useCallback(() => setIsOpen(false), []);
   const { triggerRef, menuRef, anchor, updateAnchor } = useComposerMenuAnchor(isOpen, close, 22 * 16);
 
-  if (permissionModes.length === 0) {
-    return null;
+  if (capabilityStatus !== 'ready' || permissionModes.length === 0 || !permissionMode) {
+    return (
+      <button
+        type="button"
+        disabled
+        aria-busy="true"
+        aria-label={t('composer.permissionModeUnavailable', { defaultValue: 'Permission mode unavailable' })}
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/50 bg-card sm:h-9 sm:w-9"
+      >
+        <span aria-hidden className="h-4 w-4 animate-pulse rounded-sm bg-muted-foreground/25" />
+      </button>
+    );
   }
 
   const activeAppearance = getAppearance(permissionMode);

@@ -3,12 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Button, Input } from '../../../../shared/view/ui';
-import {
-  MCP_PROVIDER_NAMES,
-  MCP_SUPPORTED_SCOPES,
-  MCP_SUPPORTED_TRANSPORTS,
-  MCP_SUPPORTS_WORKING_DIRECTORY,
-} from '../../constants';
+import { MCP_PROVIDER_NAMES } from '../../constants';
 import { useMcpServerForm } from '../../hooks/useMcpServerForm';
 import type {
   McpFormMode,
@@ -16,7 +11,7 @@ import type {
   McpProject,
   McpProvider,
   McpScope,
-  McpTransport,
+  ProviderMcpCapabilities,
   ProviderMcpServer,
 } from '../../types';
 
@@ -29,8 +24,7 @@ type McpServerFormModalProps = {
   title?: string;
   description?: string;
   submitLabel?: string;
-  supportedScopes?: McpScope[];
-  supportedTransports?: McpTransport[];
+  mcpCapabilities: ProviderMcpCapabilities;
   onClose: () => void;
   onSubmit: (formData: McpFormState, editingServer: ProviderMcpServer | null) => Promise<void>;
 };
@@ -41,7 +35,7 @@ const getScopeLabel = (scope: McpScope, mode: McpFormMode): string => {
   }
 
   if (scope === 'local') {
-    return 'Claude Local';
+    return 'Local (Project Override)';
   }
 
   return mode === 'global' ? 'Project (All Providers)' : 'Project';
@@ -55,7 +49,7 @@ const getScopeDescription = (scope: McpScope, mode: McpFormMode): string => {
   }
 
   if (scope === 'local') {
-    return 'Stored in Claude user settings for the selected project';
+    return 'Stored in provider settings for the selected project';
   }
 
   return mode === 'global'
@@ -72,15 +66,14 @@ export default function McpServerFormModal({
   title,
   description,
   submitLabel,
-  supportedScopes,
-  supportedTransports,
+  mcpCapabilities,
   onClose,
   onSubmit,
 }: McpServerFormModalProps) {
   const { t } = useTranslation('settings');
   const isGlobalMode = mode === 'global';
-  const availableScopes = supportedScopes ?? MCP_SUPPORTED_SCOPES[provider];
-  const availableTransports = supportedTransports ?? MCP_SUPPORTED_TRANSPORTS[provider];
+  const availableScopes = mcpCapabilities.supportedScopes;
+  const availableTransports = mcpCapabilities.supportedTransports;
   const {
     formData,
     multilineText,
@@ -100,8 +93,7 @@ export default function McpServerFormModal({
     isOpen,
     editingServer,
     currentProjects,
-    supportedScopes: availableScopes,
-    supportedTransports: availableTransports,
+    mcpCapabilities,
     unsupportedTransportMessage: isGlobalMode
       ? (transport) => `Add MCP Server supports only stdio and http across all providers, not ${transport}.`
       : undefined,
@@ -117,8 +109,8 @@ export default function McpServerFormModal({
   const addButtonLabel = submitLabel ?? `${t('mcpForm.actions.addServer')} to ${providerName}`;
   const showProjectSelector = formData.scope !== 'user';
   const supportsHttpHeaders = formData.transport === 'http' || formData.transport === 'sse';
-  const supportsWorkingDirectory = !isGlobalMode && MCP_SUPPORTS_WORKING_DIRECTORY[provider];
-  const showCodexOnlyFields = provider === 'codex' && !isGlobalMode;
+  const supportsWorkingDirectory = mcpCapabilities.supportsWorkingDirectory;
+  const supportsEnvironmentVariableReferences = mcpCapabilities.supportsEnvironmentVariableReferences;
 
   return createPortal(
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 p-4">
@@ -384,7 +376,9 @@ export default function McpServerFormModal({
             </div>
           )}
 
-          {showCodexOnlyFields && formData.importMode === 'form' && formData.transport === 'stdio' && (
+          {supportsEnvironmentVariableReferences
+            && formData.importMode === 'form'
+            && formData.transport === 'stdio' && (
             <div>
               <label className="mb-2 block text-sm font-medium text-foreground">
                 Environment Variable Names
@@ -399,16 +393,32 @@ export default function McpServerFormModal({
             </div>
           )}
 
-          {showCodexOnlyFields && formData.importMode === 'form' && formData.transport === 'http' && (
-            <div>
-              <label className="mb-2 block text-sm font-medium text-foreground">
-                Bearer Token Environment Variable
-              </label>
-              <Input
-                value={formData.bearerTokenEnvVar}
-                onChange={(event) => updateForm('bearerTokenEnvVar', event.target.value)}
-                placeholder="MCP_TOKEN"
-              />
+          {supportsEnvironmentVariableReferences
+            && formData.importMode === 'form'
+            && formData.transport !== 'stdio' && (
+            <div className="space-y-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-foreground">
+                  Bearer Token Environment Variable
+                </label>
+                <Input
+                  value={formData.bearerTokenEnvVar}
+                  onChange={(event) => updateForm('bearerTokenEnvVar', event.target.value)}
+                  placeholder="MCP_TOKEN"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-foreground">
+                  Environment Variable Header Names
+                </label>
+                <textarea
+                  value={multilineText.envHttpHeaders}
+                  onChange={(event) => updateMultilineText('envHttpHeaders', event.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                  rows={3}
+                  placeholder="Authorization=MCP_AUTH_HEADER"
+                />
+              </div>
             </div>
           )}
 

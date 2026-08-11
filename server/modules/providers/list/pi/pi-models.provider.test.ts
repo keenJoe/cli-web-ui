@@ -36,17 +36,19 @@ test('T10 supported models are canonical with reasoning-only effort and state de
   const catalog = await provider.getSupportedModels();
 
   assert.deepEqual(
-    catalog.OPTIONS.map((o) => o.value),
+    catalog.models.OPTIONS.map((o) => o.value),
     ['anthropic/claude-sonnet', 'openai/gpt-basic'],
   );
 
-  const reasoningOption = catalog.OPTIONS.find((o) => o.value === 'anthropic/claude-sonnet');
-  const plainOption = catalog.OPTIONS.find((o) => o.value === 'openai/gpt-basic');
+  const reasoningOption = catalog.models.OPTIONS.find((o) => o.value === 'anthropic/claude-sonnet');
+  const plainOption = catalog.models.OPTIONS.find((o) => o.value === 'openai/gpt-basic');
   assert.ok(reasoningOption?.effort, 'reasoning model exposes thinking effort');
   assert.ok(reasoningOption.effort.values.length > 0);
   assert.equal(plainOption?.effort, undefined, 'non-reasoning model has no effort');
 
-  assert.equal(catalog.DEFAULT, 'openai/gpt-basic');
+  assert.equal(catalog.models.DEFAULT, 'openai/gpt-basic');
+  assert.equal(catalog.cacheable, true);
+  assert.equal(catalog.fingerprint, '');
 });
 
 // T10 变体 — 无 state.model 时回退目录首项。
@@ -56,7 +58,7 @@ test('T10 default falls back to first option when state has no model', async () 
   );
 
   const catalog = await provider.getSupportedModels();
-  assert.equal(catalog.DEFAULT, 'anthropic/claude-a');
+  assert.equal(catalog.models.DEFAULT, 'anthropic/claude-a');
 });
 
 // T11 — 未认证（probe 无模型）→ ERR-PI-NOT-AUTHENTICATED，不冒充空目录。
