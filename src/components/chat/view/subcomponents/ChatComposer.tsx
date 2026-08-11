@@ -397,15 +397,35 @@ export default function ChatComposer({
               <PaperclipIcon />
             </PromptInputButton>
 
-            {onVoiceTranscript && voiceAvailable && (
-              <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
-            )}
-
             <TokenUsageSummary
               supported={supportsTokenUsage}
               usage={tokenBudget}
               onClick={onShowTokenUsage}
             />
+
+            <ComposerModelMenu
+              capabilityStatus={providerCapabilityStatus}
+              effort={effort}
+              effortOptions={availableEffortOptions}
+              onSelectEffort={onSelectEffort}
+              model={model}
+              modelOptions={availableModelOptions}
+              onSelectModel={onSelectModel}
+              modelsLoading={modelsLoading}
+              hidden={modelMenuHidden}
+            />
+
+            <ComposerPermissionMenu
+              capabilityStatus={providerCapabilityStatus}
+              permissionMode={permissionMode}
+              permissionModes={availablePermissionModes}
+              onSelectPermissionMode={onSelectPermissionMode}
+              providerLabel={providerLabel}
+            />
+
+            {onVoiceTranscript && voiceAvailable && (
+              <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
+            )}
 
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}
@@ -431,7 +451,6 @@ export default function ChatComposer({
                 <XIcon />
               </PromptInputButton>
             )}
-
           </PromptInputTools>
 
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
@@ -442,26 +461,6 @@ export default function ChatComposer({
             >
               {submitHint}
             </div>
-
-            <ComposerModelMenu
-              capabilityStatus={providerCapabilityStatus}
-              effort={effort}
-              effortOptions={availableEffortOptions}
-              onSelectEffort={onSelectEffort}
-              model={model}
-              modelOptions={availableModelOptions}
-              onSelectModel={onSelectModel}
-              modelsLoading={modelsLoading}
-              hidden={modelMenuHidden}
-            />
-
-            <ComposerPermissionMenu
-              capabilityStatus={providerCapabilityStatus}
-              permissionMode={permissionMode}
-              permissionModes={availablePermissionModes}
-              onSelectPermissionMode={onSelectPermissionMode}
-              providerLabel={providerLabel}
-            />
 
             <PromptInputSubmit
               onClick={
