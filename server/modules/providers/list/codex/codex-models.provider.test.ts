@@ -29,12 +29,19 @@ const writeModelsCache = (dir: string, models: unknown[]): string => {
 
 const mockFetch = (response: unknown) => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
-    ok: true,
-    json: async () => response,
-  }) as Response;
-  return () => {
-    globalThis.fetch = originalFetch;
+  const requestedUrls: string[] = [];
+  globalThis.fetch = async (input: Parameters<typeof fetch>[0]) => {
+    requestedUrls.push(typeof input === 'string' ? input : String(input));
+    return {
+      ok: true,
+      json: async () => response,
+    } as Response;
+  };
+  return {
+    requestedUrls,
+    restore: () => {
+      globalThis.fetch = originalFetch;
+    },
   };
 };
 
@@ -55,7 +62,7 @@ test('codex supported models come from the configured API with a cacheable finge
   const dir = makeTempDir();
   try {
     const configPath = makeConfig(dir);
-    const restore = mockFetch({
+    const fetchMock = mockFetch({
       data: [{ id: 'gpt-5.6-sol' }, { id: 'gpt-5.4', display_name: 'GPT-5.4' }],
     });
 
@@ -63,6 +70,7 @@ test('codex supported models come from the configured API with a cacheable finge
       const provider = new CodexProviderModels({ configPath, modelsCachePath: path.join(dir, 'missing-cache.json') });
       const catalog = await provider.getSupportedModels();
 
+      assert.deepEqual(fetchMock.requestedUrls, ['https://aiapi.tcredit.com/v1/models']);
       assert.equal(catalog.cacheable, true);
       assert.deepEqual(
         catalog.models.OPTIONS.map((option) => option.value),
@@ -75,7 +83,32 @@ test('codex supported models come from the configured API with a cacheable finge
         model: 'gpt-5.6-sol',
       }));
     } finally {
-      restore();
+      fetchMock.restore();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('codex models fetched from the configured API carry reasoning effort levels', async () => {
+  const dir = makeTempDir();
+  try {
+    const configPath = makeConfig(dir);
+    const fetchMock = mockFetch({ data: [{ id: 'gpt-5.6-sol' }] });
+
+    try {
+      const provider = new CodexProviderModels({ configPath, modelsCachePath: path.join(dir, 'missing-cache.json') });
+      const catalog = await provider.getSupportedModels();
+
+      const [option] = catalog.models.OPTIONS;
+      assert.equal(option.value, 'gpt-5.6-sol');
+      assert.deepEqual(
+        option.effort?.values.map((value) => value.value),
+        ['low', 'medium', 'high', 'xhigh'],
+      );
+      assert.equal(option.effort?.default, 'medium');
+    } finally {
+      fetchMock.restore();
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -158,7 +191,7 @@ test('codex cached catalog fingerprint matches the fingerprint getSupportedModel
   const dir = makeTempDir();
   try {
     const configPath = makeConfig(dir);
-    const restore = mockFetch({
+    const fetchMock = mockFetch({
       data: [{ id: 'gpt-5.6-sol' }],
     });
 
@@ -169,7 +202,7 @@ test('codex cached catalog fingerprint matches the fingerprint getSupportedModel
       assert.notEqual(catalog.fingerprint, '');
       assert.equal(provider.getCachedCatalogFingerprint(), catalog.fingerprint);
     } finally {
-      restore();
+      fetchMock.restore();
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

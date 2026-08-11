@@ -19,7 +19,7 @@ import {
   readOptionalString,
 } from '@/shared/utils.js';
 
-import { CodexConfig, normalizeModelsEndpoint } from './codex-config.js';
+import { CodexConfig } from './codex-config.js';
 
 /**
  * Synchronous mirror of `CodexConfig.load()` credential resolution, reduced to
@@ -197,6 +197,15 @@ const buildCodexModelsDefinition = (models: CodexCachedModel[]): ProviderModelsD
   };
 };
 
+// The gateway `/v1/models` payload only carries `{value, label}` and drops the
+// reasoning-effort metadata `models_cache.json` supplies. Re-attach the levels
+// the Codex SDK accepts (`ModelReasoningEffort`) so the composer's Reasoning
+// selector keeps working for config-driven catalogs.
+const CODEX_FETCHED_EFFORT: NonNullable<ProviderModelOption['effort']> = {
+  default: 'medium',
+  values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }],
+};
+
 const buildCodexModelsDefinitionFromFetched = (
   fetched: Array<{ value: string; label: string }>,
 ): ProviderModelsDefinition => {
@@ -205,7 +214,7 @@ const buildCodexModelsDefinitionFromFetched = (
   }
 
   return {
-    OPTIONS: fetched,
+    OPTIONS: fetched.map((option) => ({ ...option, effort: CODEX_FETCHED_EFFORT })),
     DEFAULT: fetched[0]?.value ?? CODEX_FALLBACK_MODELS.DEFAULT,
   };
 };
@@ -244,10 +253,7 @@ export class CodexProviderModels implements IProviderModels {
       : '';
 
     if (config?.baseUrl && config.credential) {
-      const endpoint = normalizeModelsEndpoint(config.baseUrl);
-      const fetched = endpoint
-        ? await fetchOpenAICompatModels(endpoint, config.credential.value)
-        : null;
+      const fetched = await fetchOpenAICompatModels(config.baseUrl, config.credential.value);
       if (fetched) {
         return {
           models: buildCodexModelsDefinitionFromFetched(fetched),

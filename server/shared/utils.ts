@@ -691,7 +691,12 @@ export async function fetchOpenAICompatModels(
   baseUrl: string,
   token: string,
 ): Promise<FetchedModelOption[] | null> {
-  return fetchModelsEndpoint(`${baseUrl}/v1/models`, {
+  const endpoint = normalizeModelsEndpoint(baseUrl);
+  if (!endpoint) {
+    return null;
+  }
+
+  return fetchModelsEndpoint(endpoint, {
     Authorization: `Bearer ${token}`,
   });
 }
