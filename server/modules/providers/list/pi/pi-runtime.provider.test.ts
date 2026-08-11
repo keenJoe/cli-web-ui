@@ -301,6 +301,36 @@ test('mapPiEvent maps tool execution start/end and retry/turn_end to status', ()
 });
 
 // T3: known event, illegal payload → ERR-PI-RPC-PROTOCOL (thrown, not success)
+test('mapPiEvent surfaces an upstream failure reported on the finalized message', () => {
+  assert.deepEqual(
+    mapPiEvent({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '400: The image format is illegal and cannot be opened',
+      },
+    }),
+    { kind: 'error', content: '400: The image format is illegal and cannot be opened' },
+  );
+});
+
+test('mapPiEvent falls back to a stable code when the failure carries no message', () => {
+  assert.deepEqual(
+    mapPiEvent({ type: 'message_end', message: { role: 'assistant', stopReason: 'error' } }),
+    { kind: 'error', content: 'ERR-PI-UPSTREAM' },
+  );
+});
+
+test('mapPiEvent ignores a message_end that completed normally', () => {
+  assert.equal(
+    mapPiEvent({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } }),
+    null,
+  );
+  assert.equal(mapPiEvent({ type: 'message_end', message: { role: 'user' } }), null);
+  assert.equal(mapPiEvent({ type: 'message_end' }), null);
+});
+
 test('T3: mapPiEvent throws ERR-PI-RPC-PROTOCOL on illegal known-event payload', () => {
   assert.throws(
     () => mapPiEvent({ type: 'message_update', assistantMessageEvent: { type: 'text_delta' } }),
@@ -328,6 +358,33 @@ test('isSettledEvent detects only agent_settled', () => {
 // ---------------------------------------------------------------------------
 // Runtime state machine
 // ---------------------------------------------------------------------------
+
+test('an upstream failure reaches the client instead of settling as a silent no-op', async () => {
+  const fake = new FakeRpc();
+  const runtime = createPiRuntime({ createRpcClient: () => fake });
+  const { writer, sent } = makeWriter();
+
+  const runPromise = runPi(runtime, 'look at this image', { sessionId: 'app-1' }, writer, makeContext());
+  await tick();
+
+  // Pi's retry loop: each attempt produces a finalized assistant message with
+  // no deltas, then `agent_settled` once the retries are exhausted.
+  fake.emit({
+    type: 'message_end',
+    message: {
+      role: 'assistant',
+      stopReason: 'error',
+      errorMessage: '400: The image format is illegal and cannot be opened',
+    },
+  });
+  fake.emit({ type: 'agent_settled' });
+
+  await runPromise;
+
+  const errors = sent.filter((message) => message.kind === 'error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].content, '400: The image format is illegal and cannot be opened');
+});
 
 // T1: normal stream -> normalized text/thinking + one completed outcome
 test('T1: streams normalized text/thinking then returns completed on agent_settled', async () => {

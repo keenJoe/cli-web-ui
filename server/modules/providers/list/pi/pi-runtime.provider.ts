@@ -59,6 +59,7 @@ export type NormalizedPiEvent =
   | { kind: 'thinking_end'; contentIndex: number; content: string }
   | { kind: 'tool_use'; toolId: string; toolName: string; toolInput: unknown }
   | { kind: 'tool_result'; toolId: string; toolName: string; content: string; isError: boolean }
+  | { kind: 'error'; content: string }
   | { kind: 'status'; status: string };
 
 type ActiveThinkingBlock = {
@@ -229,6 +230,23 @@ export function mapPiEvent(event: unknown): NormalizedPiEvent | null {
         content: formatPiToolResultContent(event.result),
         isError,
       };
+    }
+
+    case 'message_end': {
+      // Pi reports upstream failures (400 bad request, 429 rate limit, ...) on
+      // the finalized assistant message rather than as a dedicated error event.
+      // Without this the turn produces no visible output at all: the model
+      // emitted no deltas, and `agent_settled` still arrives once Pi exhausts
+      // its retries, so the run would look like a silent no-op.
+      const message = event.message;
+      if (!isRecord(message) || message.stopReason !== 'error') {
+        return null;
+      }
+
+      const errorMessage = typeof message.errorMessage === 'string'
+        ? message.errorMessage.trim()
+        : '';
+      return { kind: 'error', content: errorMessage || 'ERR-PI-UPSTREAM' };
     }
 
     case 'turn_end':
