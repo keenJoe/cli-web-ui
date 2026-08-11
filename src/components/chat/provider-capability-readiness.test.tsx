@@ -173,6 +173,206 @@ const installMountedHookDom = (fetchImpl: typeof fetch) => {
   };
 };
 
+// Component rendering needs real DOM node creation (portals go to document.body),
+// which the hook-only stub above cannot provide. This builds a minimal accumulating
+// DOM so a component's rendered text can be inspected after a client mount.
+const installComponentDom = () => {
+  const actGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  const hasOwn = (key: PropertyKey) => Object.prototype.hasOwnProperty.call(globalThis, key);
+  const hadWindow = hasOwn('window');
+  const hadDocument = hasOwn('document');
+  const hadActEnvironment = hasOwn('IS_REACT_ACT_ENVIRONMENT');
+  const hadRequestAnimationFrame = hasOwn('requestAnimationFrame');
+  const hadCancelAnimationFrame = hasOwn('cancelAnimationFrame');
+  const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
+  const originalActEnvironment = actGlobal.IS_REACT_ACT_ENVIRONMENT;
+  const originalRequestAnimationFrame = (globalThis as Record<string, unknown>).requestAnimationFrame;
+  const originalCancelAnimationFrame = (globalThis as Record<string, unknown>).cancelAnimationFrame;
+
+  type NodeStub = Record<string, unknown> & {
+    nodeType: number;
+    childNodes: NodeStub[];
+    parentNode: NodeStub | null;
+    textContent: string;
+    attrs: Record<string, string>;
+  };
+
+  type DocumentStub = {
+    nodeType: number;
+    body: NodeStub;
+    documentElement: { namespaceURI: string };
+    createElement: (tag: string) => NodeStub;
+    createElementNS: (namespace: string, tag: string) => NodeStub;
+    createTextNode: (text: string) => NodeStub;
+    addEventListener: typeof noop;
+    removeEventListener: typeof noop;
+    activeElement: null;
+    getElementById: () => null;
+    querySelector: () => null;
+  };
+
+  class HTMLIFrameElementStub {}
+  const makeNode = (tag: string, ownerDocument: DocumentStub): NodeStub => {
+    const node: NodeStub = {
+      nodeType: tag === '#text' ? 3 : 1,
+      nodeName: tag === '#text' ? '#text' : tag.toUpperCase(),
+      tagName: tag === '#text' ? undefined : tag.toUpperCase(),
+      ownerDocument,
+      parentNode: null,
+      childNodes: [],
+      style: {},
+      attrs: {},
+      textContent: '',
+      value: '',
+      checked: false,
+      disabled: false,
+      className: '',
+      dataset: {},
+      classList: { add: noop, remove: noop, toggle: noop, contains: () => false },
+      addEventListener: noop,
+      removeEventListener: noop,
+      appendChild(child: NodeStub) {
+        child.parentNode = node;
+        node.childNodes.push(child);
+        return child;
+      },
+      insertBefore(child: NodeStub, reference: NodeStub) {
+        child.parentNode = node;
+        const index = node.childNodes.indexOf(reference);
+        node.childNodes.splice(index === -1 ? node.childNodes.length : index, 0, child);
+        return child;
+      },
+      removeChild(child: NodeStub) {
+        const index = node.childNodes.indexOf(child);
+        if (index !== -1) node.childNodes.splice(index, 1);
+        child.parentNode = null;
+        return child;
+      },
+      setAttribute(key: string, value: string) {
+        node.attrs[key] = value;
+      },
+      removeAttribute(key: string) {
+        delete node.attrs[key];
+      },
+      getAttribute(key: string) {
+        return node.attrs[key] ?? null;
+      },
+      focus: noop,
+      blur: noop,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      contains: () => false,
+      isConnected: true,
+    };
+    return node;
+  };
+
+  const makeDocument = (): DocumentStub => {
+    const documentStub: DocumentStub = {
+      nodeType: 9,
+      body: null as never,
+      documentElement: { namespaceURI: 'http://www.w3.org/1999/xhtml' },
+      createElement: (tag) => makeNode(tag, documentStub),
+      createElementNS: (_namespace, tag) => makeNode(tag, documentStub),
+      createTextNode: (text) => {
+        const node = makeNode('#text', documentStub);
+        node.textContent = text;
+        return node;
+      },
+      addEventListener: noop,
+      removeEventListener: noop,
+      activeElement: null,
+      getElementById: () => null,
+      querySelector: () => null,
+    };
+    documentStub.body = makeNode('body', documentStub);
+    return documentStub;
+  };
+
+  const documentStub = makeDocument();
+  const container = makeNode('div', documentStub);
+  const windowStub = {
+    HTMLIFrameElement: HTMLIFrameElementStub,
+    document: documentStub,
+    addEventListener: noop,
+    removeEventListener: noop,
+    setTimeout,
+    clearTimeout,
+    requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(callback, 0),
+    cancelAnimationFrame: clearTimeout,
+  };
+
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: windowStub });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: documentStub });
+  Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true });
+  Object.defineProperty(globalThis, 'requestAnimationFrame', {
+    configurable: true,
+    value: (callback: FrameRequestCallback) => setTimeout(callback, 0),
+  });
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', { configurable: true, value: clearTimeout });
+
+  const collectText = (): string => {
+    const out: string[] = [];
+    const walk = (node: NodeStub) => {
+      if (node.nodeType === 3) {
+        out.push(node.textContent);
+        return;
+      }
+      // React sets element.textContent directly for single-text children, so
+      // leaf elements carry their text without a text-node child.
+      if (node.childNodes.length === 0) {
+        out.push(node.textContent);
+        return;
+      }
+      node.childNodes.forEach(walk);
+    };
+    walk(documentStub.body);
+    return out.join('');
+  };
+
+  return {
+    container,
+    collectText,
+    restore: () => {
+      if (hadWindow) {
+        Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+      } else {
+        Reflect.deleteProperty(globalThis, 'window');
+      }
+      if (hadDocument) {
+        Object.defineProperty(globalThis, 'document', { configurable: true, value: originalDocument });
+      } else {
+        Reflect.deleteProperty(globalThis, 'document');
+      }
+      if (hadActEnvironment) {
+        Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+          configurable: true,
+          value: originalActEnvironment,
+        });
+      } else {
+        Reflect.deleteProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT');
+      }
+      if (hadRequestAnimationFrame) {
+        Object.defineProperty(globalThis, 'requestAnimationFrame', {
+          configurable: true,
+          value: originalRequestAnimationFrame,
+        });
+      } else {
+        Reflect.deleteProperty(globalThis, 'requestAnimationFrame');
+      }
+      if (hadCancelAnimationFrame) {
+        Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+          configurable: true,
+          value: originalCancelAnimationFrame,
+        });
+      } else {
+        Reflect.deleteProperty(globalThis, 'cancelAnimationFrame');
+      }
+    },
+  };
+};
+
 type HookModulePath =
   | '/src/components/chat/hooks/useChatProviderState.ts'
   | '/src/components/chat/hooks/useChatComposerState.ts'
@@ -354,6 +554,110 @@ test('model picker remains a disabled skeleton when a session model resolves wit
   assert.match(html, /disabled=""/);
   assert.match(html, /aria-busy="true"/);
   assert.doesNotMatch(html, /session-only-model/);
+});
+
+test('model picker renders nothing when the provider is definitely unauthenticated', () => {
+  const html = renderToStaticMarkup(
+    <ComposerModelMenu
+      hidden
+      capabilityStatus="ready"
+      effort="default"
+      effortOptions={[]}
+      onSelectEffort={noop}
+      model="pi-model"
+      modelOptions={[{ value: 'pi-model', label: 'Pi Model' }]}
+      onSelectModel={noop}
+      modelsLoading={false}
+    />,
+  );
+  assert.equal(html, '');
+});
+
+test('model picker still renders when explicitly not hidden', () => {
+  const html = renderToStaticMarkup(
+    <ComposerModelMenu
+      hidden={false}
+      capabilityStatus="ready"
+      effort="default"
+      effortOptions={[]}
+      onSelectEffort={noop}
+      model="pi-model"
+      modelOptions={[{ value: 'pi-model', label: 'Pi Model' }]}
+      onSelectModel={noop}
+      modelsLoading={false}
+    />,
+  );
+  assert.match(html, /Pi Model/);
+  assert.doesNotMatch(html, /aria-busy="true"/);
+});
+
+test('command modal model selector renders nothing when the provider is definitely unauthenticated', async () => {
+  const dom = installComponentDom();
+  const vite = await createServer({ appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } });
+  const root = createRoot(dom.container as never);
+  try {
+    const modalModule = await vite.ssrLoadModule(
+      '/src/components/chat/view/subcomponents/CommandResultModal.tsx',
+    );
+    const CommandResultModal = modalModule.default as React.ComponentType<{
+      payload: {
+        kind: 'models';
+        data: {
+          current: { provider: string; model: string; providerLabel: string };
+          availableOptions: Array<{ value: string; label: string }>;
+        };
+      };
+      onClose: () => void;
+      providerModelCatalog: Record<string, never>;
+      providerModelCacheCatalog: Record<string, never>;
+      providerModelsRefreshing: boolean;
+      onHardRefreshProviderModels: () => void;
+      currentSessionId: string | null;
+      onSelectProviderModel: () => Promise<{ scope: 'default'; model: string }>;
+      modelMenuHidden: boolean;
+    }>;
+    const modelsPayload: {
+      kind: 'models';
+      data: {
+        current: { provider: string; model: string; providerLabel: string };
+        availableOptions: Array<{ value: string; label: string }>;
+      };
+    } = {
+      kind: 'models',
+      data: {
+        current: { provider: 'pi', model: 'pi-model', providerLabel: 'Pi' },
+        availableOptions: [{ value: 'pi-model', label: 'Pi Model' }],
+      },
+    };
+    const baseProps = {
+      payload: modelsPayload,
+      onClose: noop,
+      providerModelCatalog: {},
+      providerModelCacheCatalog: {},
+      providerModelsRefreshing: false,
+      onHardRefreshProviderModels: noop,
+      currentSessionId: null,
+      onSelectProviderModel: async () => ({ scope: 'default' as const, model: '' }),
+    };
+
+    await act(async () => {
+      root.render(<CommandResultModal {...baseProps} modelMenuHidden />);
+    });
+    const hiddenText = dom.collectText();
+    assert.doesNotMatch(hiddenText, /pi-model/);
+    assert.match(hiddenText, /Choose a Model/);
+
+    await act(async () => {
+      root.render(<CommandResultModal {...baseProps} modelMenuHidden={false} />);
+    });
+    const visibleText = dom.collectText();
+    assert.match(visibleText, /pi-model/);
+    assert.match(visibleText, /Current selection/);
+  } finally {
+    await act(async () => root.unmount());
+    await vite.close();
+    dom.restore();
+  }
 });
 
 test('empty-state model picker does not expose a provider fallback before capabilities are ready', async () => {
@@ -2961,5 +3265,337 @@ test('provider state preserves backend model and permission behavior once capabi
       assert.deepEqual(getState().currentProviderEffortOptions, [{ value: 'high' }]);
     },
   });
+  storage.clear();
+});
+
+test('initial provider auth status map carries an installed field for every provider', async () => {
+  const vite = await createServer({ appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } });
+  try {
+    const typesModule = await vite.ssrLoadModule('/src/components/provider-auth/types.ts');
+    const createInitialProviderAuthStatusMap = typesModule.createInitialProviderAuthStatusMap as (
+      loading?: boolean,
+    ) => Record<string, { installed: boolean }>;
+    const map = createInitialProviderAuthStatusMap();
+    for (const provider of Object.keys(map)) {
+      assert.equal(typeof map[provider].installed, 'boolean', `${provider} must carry installed`);
+    }
+    assert.equal(map.claude.installed, false);
+  } finally {
+    await vite.close();
+  }
+});
+
+test('auth status flips propagate through the shared store into chat provider state', async () => {
+  storage.clear();
+  storage.set('selected-provider', 'pi');
+  const dom = installMountedHookDom(async (request) => {
+    const url = String(request);
+    if (url.includes('/api/providers/capabilities')) {
+      return jsonResponse({
+        success: true,
+        data: {
+          providers: [{
+            provider: 'pi',
+            permissionModes: ['bypassPermissions'],
+            defaultPermissionMode: 'bypassPermissions',
+          }],
+        },
+      });
+    }
+    if (url.includes('/auth/status')) {
+      const provider = url.match(/\/api\/providers\/([^/]+)\/auth\/status/)?.[1];
+      return jsonResponse({
+        success: true,
+        data: {
+          provider,
+          installed: true,
+          authenticated: true,
+          email: 'user@example.com',
+          method: 'token',
+        },
+      });
+    }
+    if (url.includes('/api/providers/pi/models')) {
+      return jsonResponse({
+        success: true,
+        data: {
+          models: {
+            OPTIONS: [{ value: 'pi-model', label: 'Pi Model' }],
+            DEFAULT: 'pi-model',
+          },
+          cache: {
+            updatedAt: '2026-08-05T00:00:00.000Z',
+            expiresAt: '2026-08-05T01:00:00.000Z',
+            source: 'fresh',
+          },
+        },
+      });
+    }
+    return jsonResponse({ success: false }, 500);
+  });
+  const vite = await createServer({ appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } });
+  const root = createRoot(dom.container as never);
+  try {
+    type ProviderAuthStatusSlice = { authenticated: boolean; installed: boolean };
+    const authHookModule = await vite.ssrLoadModule(
+      '/src/components/provider-auth/hooks/useProviderAuthStatus.ts',
+    );
+    const useProviderAuthStatus = authHookModule.useProviderAuthStatus as () => {
+      providerAuthStatus: Record<string, ProviderAuthStatusSlice>;
+      refreshProviderAuthStatuses: () => Promise<void>;
+    };
+    const chatHookModule = await vite.ssrLoadModule(
+      '/src/components/chat/hooks/useChatProviderState.ts',
+    );
+    const useChatProviderState = chatHookModule.useChatProviderState as (
+      args: { selectedProject: null; selectedSession: null },
+    ) => { providerAuthStatus: Record<string, ProviderAuthStatusSlice> };
+
+    let authState: ReturnType<typeof useProviderAuthStatus> | undefined;
+    let chatState: ReturnType<typeof useChatProviderState> | undefined;
+    function SharedStoreProbe() {
+      authState = useProviderAuthStatus();
+      chatState = useChatProviderState({ selectedProject: null, selectedSession: null });
+      return null;
+    }
+
+    await act(async () => root.render(<SharedStoreProbe />));
+    assert.ok(chatState);
+    assert.ok(authState);
+    assert.equal(chatState.providerAuthStatus.claude.authenticated, false);
+    assert.equal(chatState.providerAuthStatus.claude.installed, false);
+
+    const refreshProviderAuthStatuses = authState.refreshProviderAuthStatuses;
+    await act(async () => {
+      await refreshProviderAuthStatuses();
+    });
+
+    assert.equal(chatState.providerAuthStatus.claude.authenticated, true);
+    assert.equal(chatState.providerAuthStatus.claude.installed, true);
+  } finally {
+    await act(async () => root.unmount());
+    await vite.close();
+    dom.restore();
+  }
+  storage.clear();
+});
+
+test('chat provider state maps auth status to model menu availability and hidden flags', async () => {
+  storage.clear();
+  storage.set('selected-provider', 'pi');
+  const dom = installMountedHookDom(async (request) => {
+    const url = String(request);
+    if (url.includes('/api/providers/capabilities')) {
+      return jsonResponse({
+        success: true,
+        data: {
+          providers: [{
+            provider: 'pi',
+            permissionModes: ['bypassPermissions'],
+            defaultPermissionMode: 'bypassPermissions',
+          }],
+        },
+      });
+    }
+    if (url.includes('/api/providers/pi/models')) {
+      return jsonResponse({
+        success: true,
+        data: {
+          models: {
+            OPTIONS: [{ value: 'pi-model', label: 'Pi Model' }],
+            DEFAULT: 'pi-model',
+          },
+          cache: {
+            updatedAt: '2026-08-05T00:00:00.000Z',
+            expiresAt: '2026-08-05T01:00:00.000Z',
+            source: 'fresh',
+          },
+        },
+      });
+    }
+    return jsonResponse({ success: false }, 500);
+  });
+  const vite = await createServer({ appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } });
+  const root = createRoot(dom.container as never);
+  try {
+    type AuthStatusSlice = {
+      installed: boolean;
+      authenticated: boolean;
+      email: string | null;
+      method: string | null;
+      error: string | null;
+      loading: boolean;
+    };
+    type AuthStatusMap = Record<string, AuthStatusSlice>;
+    const authHookModule = await vite.ssrLoadModule(
+      '/src/components/provider-auth/hooks/useProviderAuthStatus.ts',
+    );
+    const useProviderAuthStatus = authHookModule.useProviderAuthStatus as () => {
+      providerAuthStatus: AuthStatusMap;
+      setProviderAuthStatus: (
+        next: AuthStatusMap | ((previous: AuthStatusMap) => AuthStatusMap),
+      ) => void;
+    };
+    const chatHookModule = await vite.ssrLoadModule(
+      '/src/components/chat/hooks/useChatProviderState.ts',
+    );
+    const useChatProviderState = chatHookModule.useChatProviderState as (
+      args: { selectedProject: null; selectedSession: null },
+    ) => {
+      modelMenuAvailable: boolean;
+      modelMenuHidden: boolean;
+    };
+
+    let authState: ReturnType<typeof useProviderAuthStatus> | undefined;
+    let state: ReturnType<typeof useChatProviderState> | undefined;
+    function ChatStateProbe() {
+      authState = useProviderAuthStatus();
+      state = useChatProviderState({ selectedProject: null, selectedSession: null });
+      return null;
+    }
+
+    await act(async () => root.render(<ChatStateProbe />));
+    assert.ok(state);
+    assert.ok(authState);
+    const setProviderAuthStatus = authState.setProviderAuthStatus;
+
+    // Auth check still in flight: keep the skeleton, do not hide.
+    assert.equal(state.modelMenuAvailable, false);
+    assert.equal(state.modelMenuHidden, false);
+
+    // Authenticated: the model menu becomes available.
+    await act(async () => {
+      setProviderAuthStatus((previous) => ({
+        ...previous,
+        pi: { ...previous.pi, loading: false, authenticated: true, installed: true, error: null },
+      }));
+    });
+    assert.equal(state.modelMenuAvailable, true);
+    assert.equal(state.modelMenuHidden, false);
+
+    // Installed but no credentials: definitely unauthenticated, hide.
+    await act(async () => {
+      setProviderAuthStatus((previous) => ({
+        ...previous,
+        pi: { ...previous.pi, loading: false, authenticated: false, installed: true, error: null },
+      }));
+    });
+    assert.equal(state.modelMenuAvailable, false);
+    assert.equal(state.modelMenuHidden, true);
+
+    // Auth check failed: skeleton, not hidden.
+    await act(async () => {
+      setProviderAuthStatus((previous) => ({
+        ...previous,
+        pi: { ...previous.pi, loading: false, authenticated: false, installed: false, error: 'check failed' },
+      }));
+    });
+    assert.equal(state.modelMenuAvailable, false);
+    assert.equal(state.modelMenuHidden, false);
+  } finally {
+    await act(async () => root.unmount());
+    await vite.close();
+    dom.restore();
+  }
+  storage.clear();
+});
+
+test('auth flip to authenticated reloads the provider model catalog', async () => {
+  storage.clear();
+  storage.set('selected-provider', 'pi');
+  let modelsRequests = 0;
+  const dom = installMountedHookDom(async (request) => {
+    const url = String(request);
+    if (url.includes('/api/providers/capabilities')) {
+      return jsonResponse({
+        success: true,
+        data: {
+          providers: [{
+            provider: 'pi',
+            permissionModes: ['bypassPermissions'],
+            defaultPermissionMode: 'bypassPermissions',
+          }],
+        },
+      });
+    }
+    if (url.includes('/api/providers/pi/models')) {
+      modelsRequests += 1;
+      return jsonResponse({
+        success: true,
+        data: {
+          models: {
+            OPTIONS: [{ value: 'pi-model', label: 'Pi Model' }],
+            DEFAULT: 'pi-model',
+          },
+          cache: {
+            updatedAt: '2026-08-05T00:00:00.000Z',
+            expiresAt: '2026-08-05T01:00:00.000Z',
+            source: 'fresh',
+          },
+        },
+      });
+    }
+    return jsonResponse({ success: false }, 500);
+  });
+  const vite = await createServer({ appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } });
+  const root = createRoot(dom.container as never);
+  try {
+    type AuthStatusSlice = {
+      installed: boolean;
+      authenticated: boolean;
+      email: string | null;
+      method: string | null;
+      error: string | null;
+      loading: boolean;
+    };
+    type AuthStatusMap = Record<string, AuthStatusSlice>;
+    const authHookModule = await vite.ssrLoadModule(
+      '/src/components/provider-auth/hooks/useProviderAuthStatus.ts',
+    );
+    const useProviderAuthStatus = authHookModule.useProviderAuthStatus as () => {
+      providerAuthStatus: AuthStatusMap;
+      setProviderAuthStatus: (
+        next: AuthStatusMap | ((previous: AuthStatusMap) => AuthStatusMap),
+      ) => void;
+    };
+    const chatHookModule = await vite.ssrLoadModule(
+      '/src/components/chat/hooks/useChatProviderState.ts',
+    );
+    const useChatProviderState = chatHookModule.useChatProviderState as (
+      args: { selectedProject: null; selectedSession: null },
+    ) => {
+      modelMenuHidden: boolean;
+    };
+
+    let authState: ReturnType<typeof useProviderAuthStatus> | undefined;
+    let state: ReturnType<typeof useChatProviderState> | undefined;
+    function ChatStateProbe() {
+      authState = useProviderAuthStatus();
+      state = useChatProviderState({ selectedProject: null, selectedSession: null });
+      return null;
+    }
+
+    await act(async () => root.render(<ChatStateProbe />));
+    assert.ok(state);
+    assert.ok(authState);
+    const setProviderAuthStatus = authState.setProviderAuthStatus;
+
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    assert.equal(modelsRequests, 1);
+
+    await act(async () => {
+      setProviderAuthStatus((previous) => ({
+        ...previous,
+        pi: { ...previous.pi, loading: false, authenticated: true, installed: true, error: null },
+      }));
+    });
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    assert.equal(modelsRequests, 2);
+    assert.equal(state?.modelMenuHidden, false);
+  } finally {
+    await act(async () => root.unmount());
+    await vite.close();
+    dom.restore();
+  }
   storage.clear();
 });

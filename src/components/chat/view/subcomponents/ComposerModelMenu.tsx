@@ -27,6 +27,8 @@ interface ComposerModelMenuProps {
   modelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
+  /** Definitively unauthenticated provider: render nothing at all. */
+  hidden?: boolean;
 }
 
 export default function ComposerModelMenu({
@@ -38,6 +40,7 @@ export default function ComposerModelMenu({
   modelOptions,
   onSelectModel,
   modelsLoading,
+  hidden,
 }: ComposerModelMenuProps) {
   const { t } = useTranslation('chat');
   const [isOpen, setIsOpen] = useState(false);
@@ -67,6 +70,9 @@ export default function ComposerModelMenu({
   const modelLabel = selectedModelOption?.label || model;
 
   const catalogUnavailable = modelOptions.length === 0 && !modelsLoading;
+  if (hidden) {
+    return null;
+  }
   if (capabilityStatus !== 'ready' || !model || catalogUnavailable) {
     const unavailableLabel = t('composer.modelMenuUnavailable', {
       defaultValue: 'Model and reasoning effort unavailable',

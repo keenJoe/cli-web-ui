@@ -18,7 +18,7 @@ import type {
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
-import { generateMessageId } from '@/shared/utils.js';
+import { AppError, generateMessageId } from '@/shared/utils.js';
 
 type ProviderRuntimeServiceDependencies = {
   listProviders(): ProviderDefinition[];
@@ -51,7 +51,17 @@ const defaultDependencies: ProviderRuntimeServiceDependencies = {
     providerModelsService.resolveResumeModel(provider, sessionId, requestedModel),
   getProviderModels: (provider, options) => providerModelsService.getProviderModels(provider, options),
   recordSessionModel: (provider, sessionId, model) => {
-    providerModelsService.setSessionModel(provider, sessionId, model);
+    // The auth gate makes this call asynchronous; an unauthenticated run would
+    // fail later in the runtime anyway, so swallow the gate error here rather
+    // than let it surface as an unhandled rejection on every chat.send. Any
+    // other failure means the session row was not persisted — log it instead of
+    // dropping it silently, without blocking the run.
+    void providerModelsService.setSessionModel(provider, sessionId, model).catch((error: unknown) => {
+      if (error instanceof AppError && error.code === 'PROVIDER_NOT_AUTHENTICATED') {
+        return undefined;
+      }
+      console.warn('Unable to record session model:', error);
+    });
   },
   createRunId: () => generateMessageId('run'),
   sessionIdentity: sessionsService,

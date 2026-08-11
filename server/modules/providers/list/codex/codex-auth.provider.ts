@@ -2,11 +2,11 @@ import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import spawn from 'cross-spawn';
-
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type { ProviderAuthStatus } from '@/shared/types.js';
-import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
+import { readObjectRecord, readOptionalString, runCliVersionProbe } from '@/shared/utils.js';
+
+import { CodexConfig } from './codex-config.js';
 
 type CodexCredentialsStatus = {
   authenticated: boolean;
@@ -20,12 +20,7 @@ export class CodexProviderAuth implements IProviderAuth {
    * Checks whether Codex is available to the server runtime.
    */
   private checkInstalled(): boolean {
-    try {
-      spawn.sync('codex', ['--version'], { stdio: 'ignore', timeout: 5000 });
-      return true;
-    } catch {
-      return false;
-    }
+    return runCliVersionProbe('codex', ['--version']);
   }
 
   /**
@@ -46,9 +41,12 @@ export class CodexProviderAuth implements IProviderAuth {
   }
 
   /**
-   * Reads Codex auth.json and checks OAuth tokens or an API key fallback.
+   * Reads Codex auth.json and checks OAuth tokens or an API key fallback,
+   * then falls back to the config.toml gateway credential for the active provider.
    */
   private async checkCredentials(): Promise<CodexCredentialsStatus> {
+    let fileError: string | null = null;
+
     try {
       const authPath = path.join(os.homedir(), '.codex', 'auth.json');
       const content = await readFile(authPath, 'utf8');
@@ -68,17 +66,24 @@ export class CodexProviderAuth implements IProviderAuth {
       if (readOptionalString(auth.OPENAI_API_KEY)) {
         return { authenticated: true, email: 'API Key Auth', method: 'api_key' };
       }
-
-      return { authenticated: false, email: null, method: null, error: 'No valid tokens found' };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      return {
-        authenticated: false,
-        email: null,
-        method: null,
-        error: code === 'ENOENT' ? 'Codex not configured' : error instanceof Error ? error.message : 'Failed to read Codex auth',
-      };
+      fileError = code === 'ENOENT'
+        ? 'Codex not configured'
+        : error instanceof Error ? error.message : 'Failed to read Codex auth';
     }
+
+    const config = await new CodexConfig().load();
+    if (config?.credential) {
+      return { authenticated: true, email: 'Configured via config.toml', method: 'config_file' };
+    }
+
+    return {
+      authenticated: false,
+      email: null,
+      method: null,
+      error: fileError ?? 'No valid tokens found',
+    };
   }
 
   /**

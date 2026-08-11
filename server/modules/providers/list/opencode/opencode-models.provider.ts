@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import crossSpawn from 'cross-spawn';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import type { IProviderModels } from '@/shared/interfaces.js';
+import type { IProviderModels, ProviderModelsCatalog } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
   ProviderModelOption,
@@ -440,28 +440,42 @@ const runOpenCodeModelsCommand = (): Promise<string> => new Promise((resolve, re
 export class OpenCodeProviderModels implements IProviderModels {
   readonly usesCatalogDefaultWhenModelOmitted = true as const;
 
-  async getSupportedModels(): Promise<ProviderModelsDefinition> {
+  async getSupportedModels(): Promise<ProviderModelsCatalog> {
     try {
       const stdout = await runOpenCodeModelsCommand();
       const verboseModels = parseOpenCodeVerboseModelsStdout(stdout);
       if (verboseModels.length > 0) {
-        return buildOpenCodeDefinitionFromVerboseModels(verboseModels);
+        const definition = buildOpenCodeDefinitionFromVerboseModels(verboseModels);
+        return {
+          models: definition,
+          fingerprint: '',
+          cacheable: definition !== OPENCODE_FALLBACK_MODELS,
+        };
       }
 
       const ids = parseOpenCodeModelsStdout(stdout);
       if (ids.length === 0) {
-        return OPENCODE_FALLBACK_MODELS;
+        return { models: OPENCODE_FALLBACK_MODELS, fingerprint: '', cacheable: false };
       }
 
-      return buildOpenCodeDefinitionFromIds(ids);
+      return {
+        models: buildOpenCodeDefinitionFromIds(ids),
+        fingerprint: '',
+        cacheable: true,
+      };
     } catch {
-      return OPENCODE_FALLBACK_MODELS;
+      return { models: OPENCODE_FALLBACK_MODELS, fingerprint: '', cacheable: false };
     }
+  }
+
+  getCachedCatalogFingerprint(): string {
+    // OpenCode 无配置文件驱动模型列表，空指纹使缓存键等价于 provider-only 键。
+    return '';
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {
     if (!sessionId?.trim()) {
-      return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+      return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
     }
 
     // OpenCode's `session` table is keyed by its own session id, so the stable
@@ -508,6 +522,6 @@ export class OpenCodeProviderModels implements IProviderModels {
       // Fall through to the provider default when OpenCode session lookup fails.
     }
 
-    return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+    return buildDefaultProviderCurrentActiveModel((await this.getSupportedModels()).models);
   }
 }

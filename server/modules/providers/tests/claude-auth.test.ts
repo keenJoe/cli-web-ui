@@ -136,6 +136,33 @@ test('checkCredentials: no CLAUDE_CODE_OAUTH_TOKEN, expired credentials file rep
   });
 });
 
+test('checkCredentials: ANTHROPIC_API_KEY in settings.json without base_url is still authenticated', async () => {
+  await withTempHome(async (homeDir) => {
+    await writeSettingsFile(homeDir, { ANTHROPIC_API_KEY: 'sk-settings-key' });
+
+    await withEnv({}, async () => {
+      const status = await checkCredentials(new ClaudeProviderAuth());
+      assert.equal(status.authenticated, true);
+      assert.equal(status.method, 'api_key');
+    });
+  });
+});
+
+test('checkCredentials: complete base_url + api_key in settings.json is authenticated via the shared settings reader', async () => {
+  await withTempHome(async (homeDir) => {
+    await writeSettingsFile(homeDir, {
+      ANTHROPIC_BASE_URL: 'https://aiapi.example.com',
+      ANTHROPIC_API_KEY: 'sk-settings-key',
+    });
+
+    await withEnv({}, async () => {
+      const status = await checkCredentials(new ClaudeProviderAuth());
+      assert.equal(status.authenticated, true);
+      assert.equal(status.method, 'api_key');
+    });
+  });
+});
+
 test('checkCredentials: ANTHROPIC_API_KEY takes precedence over CLAUDE_CODE_OAUTH_TOKEN', async () => {
   await withTempHome(async () => {
     await withEnv(

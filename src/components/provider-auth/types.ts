@@ -2,6 +2,7 @@ import type { LLMProvider } from '../../types/app';
 import { PROVIDER_IDS } from '../llm-logo-provider/providerBranding';
 
 export type ProviderAuthStatus = {
+  installed: boolean;
   authenticated: boolean;
   email: string | null;
   method: string | null;
@@ -19,6 +20,7 @@ export const PROVIDER_AUTH_STATUS_ENDPOINTS = Object.fromEntries(
 
 export const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusMap => (
   Object.fromEntries(PROVIDER_IDS.map((provider) => [provider, {
+    installed: false,
     authenticated: false,
     email: null,
     method: null,

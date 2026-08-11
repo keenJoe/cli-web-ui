@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   createProviderModelsService,
   PROVIDER_MODELS_CACHE_TTL_MS,
+  PROVIDER_MODELS_FALLBACK_TTL_MS,
 } from '@/modules/providers/services/provider-models.service.js';
 import { providerRegistry } from '@/modules/providers/index.js';
 import type {
@@ -14,6 +15,7 @@ import type {
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
 } from '@/shared/types.js';
+import { AppError, computeModelsFingerprint } from '@/shared/utils.js';
 
 const createModels = (value: string): ProviderModelsDefinition => ({
   OPTIONS: [{ value, label: value }],
@@ -45,12 +47,13 @@ const createEphemeralCachePath = (): string => path.join(
 test('provider models service delegates to the resolved provider model adapter', async () => {
   const calls: LLMProvider[] = [];
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     cachePath: createEphemeralCachePath(),
     resolveProvider: (provider) => {
       calls.push(provider);
       return {
         models: {
-          getSupportedModels: async () => createModels(`${provider}-models`),
+          getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
           getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
         },
       };
@@ -74,10 +77,11 @@ test('provider models service returns each provider adapter result without rewri
   };
 
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     cachePath: createEphemeralCachePath(),
     resolveProvider: () => ({
       models: {
-        getSupportedModels: async () => expectedModels,
+        getSupportedModels: async () => ({ models: expectedModels, fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async () => createCurrentActiveModel('cursor-active'),
       },
     }),
@@ -95,13 +99,14 @@ test('provider models are cached for the three-day ttl', async () => {
 
   try {
     const service = createProviderModelsService({
+      assertProviderAuthenticated: async () => undefined,
       cachePath: path.join(tempRoot, 'models-cache.json'),
       now: () => currentTime,
       resolveProvider: (provider) => ({
         models: {
           getSupportedModels: async () => {
             loadCount += 1;
-            return createModels(`${provider}-${loadCount}`);
+            return { models: createModels(`${provider}-${loadCount}`), fingerprint: '', cacheable: true };
           },
           getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
         },
@@ -133,12 +138,13 @@ test('claude provider models are always loaded directly from the provider', asyn
 
   try {
     const service = createProviderModelsService({
+      assertProviderAuthenticated: async () => undefined,
       cachePath: path.join(tempRoot, 'models-cache.json'),
       resolveProvider: (provider) => ({
         models: {
           getSupportedModels: async () => {
             loadCount += 1;
-            return createModels(`${provider}-${loadCount}`);
+            return { models: createModels(`${provider}-${loadCount}`), fingerprint: '', cacheable: true };
           },
           getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
         },
@@ -163,10 +169,11 @@ test('provider model cache is persisted across service instances', async () => {
 
   try {
     const writer = createProviderModelsService({
+      assertProviderAuthenticated: async () => undefined,
       cachePath,
       resolveProvider: () => ({
         models: {
-          getSupportedModels: async () => createModels('cursor-cached'),
+          getSupportedModels: async () => ({ models: createModels('cursor-cached'), fingerprint: '', cacheable: true }),
           getCurrentActiveModel: async () => createCurrentActiveModel('cursor-active'),
         },
       }),
@@ -174,6 +181,7 @@ test('provider model cache is persisted across service instances', async () => {
     await writer.getProviderModels('cursor');
 
     const reader = createProviderModelsService({
+      assertProviderAuthenticated: async () => undefined,
       cachePath,
       resolveProvider: () => ({
         models: {
@@ -198,13 +206,14 @@ test('concurrent provider model requests share one load operation', async () => 
 
   try {
     const service = createProviderModelsService({
+      assertProviderAuthenticated: async () => undefined,
       cachePath: path.join(tempRoot, 'models-cache.json'),
       resolveProvider: () => ({
         models: {
           getSupportedModels: async () => {
             loadCount += 1;
             await new Promise((resolve) => setTimeout(resolve, 20));
-            return createModels('claude-cached');
+            return { models: createModels('claude-cached'), fingerprint: '', cacheable: true };
           },
           getCurrentActiveModel: async () => createCurrentActiveModel('claude-active'),
         },
@@ -231,13 +240,14 @@ test('bypassCache forces a fresh provider fetch and updates cache metadata', asy
 
   try {
     const service = createProviderModelsService({
+      assertProviderAuthenticated: async () => undefined,
       cachePath: path.join(tempRoot, 'models-cache.json'),
       now: () => currentTime,
       resolveProvider: (provider) => ({
         models: {
           getSupportedModels: async () => {
             loadCount += 1;
-            return createModels(`${provider}-${loadCount}`);
+            return { models: createModels(`${provider}-${loadCount}`), fingerprint: '', cacheable: true };
           },
           getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active-${loadCount}`),
         },
@@ -261,10 +271,11 @@ test('bypassCache forces a fresh provider fetch and updates cache metadata', asy
 test('resolveSessionModel asks the provider adapter for the session it was given', async () => {
   const calls: Array<{ provider: LLMProvider; sessionId?: string }> = [];
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     sessions: createSessionStore({ 'session-123': null }),
     resolveProvider: (provider) => ({
       models: {
-        getSupportedModels: async () => createModels(`${provider}-models`),
+        getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async (sessionId) => {
           calls.push({ provider, sessionId });
           return createCurrentActiveModel(`${provider}-${sessionId}`);
@@ -281,16 +292,17 @@ test('resolveSessionModel asks the provider adapter for the session it was given
 test('setSessionModel records the model on the session row', async () => {
   const sessions = createSessionStore({ 'session-1': null });
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     sessions,
     resolveProvider: (provider) => ({
       models: {
-        getSupportedModels: async () => createModels(`${provider}-models`),
+        getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
       },
     }),
   });
 
-  const stored = service.setSessionModel('claude', 'session-1', 'opus');
+  const stored = await service.setSessionModel('claude', 'session-1', 'opus');
 
   assert.deepEqual(stored, {
     provider: 'claude',
@@ -304,25 +316,27 @@ test('resolveSessionModel asks the provider adapter for the session it was given
 test('setSessionModel ignores sessions that have no row yet', async () => {
   const sessions = createSessionStore();
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     sessions,
     resolveProvider: (provider) => ({
       models: {
-        getSupportedModels: async () => createModels(`${provider}-models`),
+        getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
       },
     }),
   });
 
-  assert.equal(service.setSessionModel('claude', 'missing-session', 'opus'), null);
+  assert.equal(await service.setSessionModel('claude', 'missing-session', 'opus'), null);
   assert.equal(sessions.sessions.size, 0);
 });
 
 test('resolveSessionModel prefers the recorded session model over everything else', async () => {
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     sessions: createSessionStore({ 'session-1': 'haiku' }),
     resolveProvider: (provider) => ({
       models: {
-        getSupportedModels: async () => createModels(`${provider}-models`),
+        getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async () => createCurrentActiveModel('provider-reported'),
       },
     }),
@@ -339,10 +353,11 @@ test('resolveSessionModel prefers the recorded session model over everything els
 
 test('resolveSessionModel falls back to provider session state for sessions the app never recorded', async () => {
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     sessions: createSessionStore({ 'session-1': null }),
     resolveProvider: (provider) => ({
       models: {
-        getSupportedModels: async () => createModels(`${provider}-models`),
+        getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async () => createCurrentActiveModel('provider-reported'),
       },
     }),
@@ -359,11 +374,12 @@ test('resolveSessionModel falls back to provider session state for sessions the 
 
 test('resolveSessionModel uses the requested model when the provider only reports its catalog default', async () => {
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     cachePath: createEphemeralCachePath(),
     sessions: createSessionStore({ 'session-1': null }),
     resolveProvider: () => ({
       models: {
-        getSupportedModels: async () => createModels('default'),
+        getSupportedModels: async () => ({ models: createModels('default'), fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async () => createCurrentActiveModel('default'),
       },
     }),
@@ -380,10 +396,11 @@ test('resolveSessionModel uses the requested model when the provider only report
 
 test('resolveSessionModel answers with the requested model for a chat that has no session yet', async () => {
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     sessions: createSessionStore(),
     resolveProvider: (provider) => ({
       models: {
-        getSupportedModels: async () => createModels(`${provider}-models`),
+        getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async () => createCurrentActiveModel('provider-reported'),
       },
     }),
@@ -398,11 +415,12 @@ test('resolveSessionModel answers with the requested model for a chat that has n
 
 test('resolveSessionModel falls back to the catalog default with nothing else to go on', async () => {
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     cachePath: createEphemeralCachePath(),
     sessions: createSessionStore(),
     resolveProvider: (provider) => ({
       models: {
-        getSupportedModels: async () => createModels(`${provider}-models`),
+        getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async () => createCurrentActiveModel('provider-reported'),
       },
     }),
@@ -416,10 +434,11 @@ test('resolveSessionModel falls back to the catalog default with nothing else to
 
 test('resolveResumeModel prefers the recorded session model over the requested one', async () => {
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     sessions: createSessionStore({ 'session-456': 'composer-2' }),
     resolveProvider: (provider) => ({
       models: {
-        getSupportedModels: async () => createModels(`${provider}-models`),
+        getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
       },
     }),
@@ -432,10 +451,11 @@ test('resolveResumeModel prefers the recorded session model over the requested o
 test('resolveResumeModel never lets provider session state override the requested model', async () => {
   let providerLookups = 0;
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     sessions: createSessionStore({ 'session-456': null }),
     resolveProvider: (provider) => ({
       models: {
-        getSupportedModels: async () => createModels(`${provider}-models`),
+        getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
         getCurrentActiveModel: async () => {
           providerLookups += 1;
           return createCurrentActiveModel('global-config-model');
@@ -453,13 +473,14 @@ test('resolveResumeModel never lets provider session state override the requeste
 test('resolveRunModel follows provider-owned omitted-model policy', async () => {
   let catalogLoads = 0;
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     cachePath: createEphemeralCachePath(),
     resolveProvider: (provider) => ({
       models: {
         usesCatalogDefaultWhenModelOmitted: provider === 'codex',
         getSupportedModels: async () => {
           catalogLoads += 1;
-          return createModels(`${provider}-default`);
+          return { models: createModels(`${provider}-default`), fingerprint: '', cacheable: true };
         },
         getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
       },
@@ -474,6 +495,7 @@ test('resolveRunModel follows provider-owned omitted-model policy', async () => 
 
 test('resolveRunModel keeps the production registry resolver bound to its owner', async () => {
   const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
     cachePath: createEphemeralCachePath(),
     sessions: createSessionStore(),
   });
@@ -496,4 +518,311 @@ test('five provider model facets characterize their omitted-model policy', () =>
     opencode: 'catalog',
     pi: 'catalog',
   });
+});
+
+test('getProviderModels rejects an unauthenticated provider before loading models', async () => {
+  let loadCalls = 0;
+  const service = createProviderModelsService({
+    cachePath: createEphemeralCachePath(),
+    assertProviderAuthenticated: async () => {
+      throw new AppError('provider 未安装或未认证', {
+        code: 'PROVIDER_NOT_AUTHENTICATED',
+        statusCode: 401,
+      });
+    },
+    resolveProvider: (provider) => ({
+      models: {
+        getSupportedModels: async () => {
+          loadCalls += 1;
+          return { models: createModels(`${provider}-models`), fingerprint: '', cacheable: true };
+        },
+        getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+      },
+    }),
+  });
+
+  await assert.rejects(
+    () => service.getProviderModels('codex'),
+    (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.equal(error.code, 'PROVIDER_NOT_AUTHENTICATED');
+      assert.equal(error.statusCode, 401);
+      return true;
+    },
+  );
+  assert.equal(loadCalls, 0);
+});
+
+test('setSessionModel rejects an unauthenticated provider before recording the model', async () => {
+  const sessions = createSessionStore({ 'session-1': null });
+  const service = createProviderModelsService({
+    sessions,
+    assertProviderAuthenticated: async () => {
+      throw new AppError('provider 未安装或未认证', {
+        code: 'PROVIDER_NOT_AUTHENTICATED',
+        statusCode: 401,
+      });
+    },
+    resolveProvider: (provider) => ({
+      models: {
+        getSupportedModels: async () => ({ models: createModels(`${provider}-models`), fingerprint: '', cacheable: true }),
+        getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+      },
+    }),
+  });
+
+  await assert.rejects(
+    () => service.setSessionModel('claude', 'session-1', 'opus'),
+    (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.equal(error.code, 'PROVIDER_NOT_AUTHENTICATED');
+      assert.equal(error.statusCode, 401);
+      return true;
+    },
+  );
+  assert.equal(sessions.sessions.get('session-1'), null);
+});
+
+test('getProviderModels keeps UNSUPPORTED_PROVIDER for unregistered providers', async () => {
+  const service = createProviderModelsService({
+    cachePath: createEphemeralCachePath(),
+  });
+
+  await assert.rejects(
+    () => service.getProviderModels('nonexistent' as LLMProvider),
+    (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.equal(error.code, 'UNSUPPORTED_PROVIDER');
+      return true;
+    },
+  );
+});
+
+test('R18: a changed base_url fingerprint never reuses the old cached catalog', async () => {
+  let fingerprint = 'fp-base-a';
+  let loadCount = 0;
+
+  const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
+    cachePath: createEphemeralCachePath(),
+    resolveProvider: (provider) => ({
+      models: {
+        getSupportedModels: async () => {
+          loadCount += 1;
+          return { models: createModels(fingerprint), fingerprint, cacheable: true };
+        },
+        getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+      },
+    }),
+  });
+
+  const first = await service.getProviderModels('codex');
+  assert.equal(first.models.DEFAULT, 'fp-base-a');
+  assert.equal(first.cache.source, 'fresh');
+
+  // base_url 从 A 改 B：指纹变化，旧缓存（fp-base-a）不命中，以 B 重新拉取。
+  fingerprint = 'fp-base-b';
+  const second = await service.getProviderModels('codex');
+
+  assert.equal(second.models.DEFAULT, 'fp-base-b');
+  assert.equal(second.cache.source, 'fresh');
+  assert.equal(loadCount, 2);
+});
+
+test('R19: a changed credential, model_provider, or model invalidates the cached catalog', async () => {
+  const config = { credential: 'sk-credential-a', modelProvider: 'tc-credit', model: 'gpt-5.6-sol' };
+  let loadCount = 0;
+
+  const service = createProviderModelsService({
+    assertProviderAuthenticated: async () => undefined,
+    cachePath: createEphemeralCachePath(),
+    resolveProvider: (provider) => ({
+      models: {
+        getSupportedModels: async () => {
+          loadCount += 1;
+          return {
+            models: createModels(computeModelsFingerprint(config)),
+            fingerprint: computeModelsFingerprint(config),
+            cacheable: true,
+          };
+        },
+        getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+      },
+    }),
+  });
+
+  const initialFingerprint = computeModelsFingerprint(config);
+  const first = await service.getProviderModels('codex');
+  assert.equal(first.models.DEFAULT, initialFingerprint);
+
+  config.credential = 'sk-credential-b';
+  const afterCredentialChange = await service.getProviderModels('codex');
+  assert.equal(afterCredentialChange.models.DEFAULT, computeModelsFingerprint(config));
+
+  config.modelProvider = 'another-provider';
+  const afterProviderChange = await service.getProviderModels('codex');
+  assert.equal(afterProviderChange.models.DEFAULT, computeModelsFingerprint(config));
+
+  config.model = 'gpt-5.4';
+  const afterModelChange = await service.getProviderModels('codex');
+  assert.equal(afterModelChange.models.DEFAULT, computeModelsFingerprint(config));
+
+  assert.equal(loadCount, 4);
+});
+
+test('R20: a failed configured fetch fallback stays out of the disk cache and retries after recovery', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-cache-fallback-'));
+  const cachePath = path.join(tempRoot, 'models-cache.json');
+  let apiAvailable = false;
+  let loadCount = 0;
+  let currentTime = 1_000;
+
+  try {
+    const service = createProviderModelsService({
+      assertProviderAuthenticated: async () => undefined,
+      cachePath,
+      now: () => currentTime,
+      resolveProvider: (provider) => ({
+        models: {
+          getSupportedModels: async () => {
+            loadCount += 1;
+            if (!apiAvailable) {
+              return { models: createModels('fallback-catalog'), fingerprint: 'fp-config', cacheable: false };
+            }
+            return { models: createModels('recovered-catalog'), fingerprint: 'fp-config', cacheable: true };
+          },
+          getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+        },
+      }),
+    });
+
+    const fallback = await service.getProviderModels('codex');
+    assert.equal(fallback.models.DEFAULT, 'fallback-catalog');
+    assert.equal(fallback.cache.source, 'fresh');
+
+    // cacheable=false → 不写磁盘缓存。
+    await assert.rejects(() => readFile(cachePath, 'utf8'), (error: unknown) => {
+      assert.equal((error as NodeJS.ErrnoException).code, 'ENOENT');
+      return true;
+    });
+
+    // 端点恢复后，超过内存短驻 TTL 的下一次请求重新拉取成功。
+    apiAvailable = true;
+    currentTime += PROVIDER_MODELS_FALLBACK_TTL_MS + 1;
+
+    const recovered = await service.getProviderModels('codex');
+    assert.equal(recovered.models.DEFAULT, 'recovered-catalog');
+    assert.equal(recovered.cache.source, 'fresh');
+    assert.equal(loadCount, 2);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('R21: concurrent requests with the same fingerprint share one fetch', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-cache-inflight-fp-'));
+  let loadCount = 0;
+
+  try {
+    const service = createProviderModelsService({
+      assertProviderAuthenticated: async () => undefined,
+      cachePath: path.join(tempRoot, 'models-cache.json'),
+      resolveProvider: (provider) => ({
+        models: {
+          getSupportedModels: async () => {
+            loadCount += 1;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return { models: createModels('shared-fingerprint-catalog'), fingerprint: 'fp-shared', cacheable: true };
+          },
+          getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+        },
+      }),
+    });
+
+    const [first, second] = await Promise.all([
+      service.getProviderModels('codex'),
+      service.getProviderModels('codex'),
+    ]);
+
+    assert.equal(loadCount, 1);
+    assert.equal(first.models.DEFAULT, 'shared-fingerprint-catalog');
+    assert.equal(second.models.DEFAULT, 'shared-fingerprint-catalog');
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('R22: the persisted cache file never contains the raw credential', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-cache-no-secret-'));
+  const cachePath = path.join(tempRoot, 'models-cache.json');
+  const secret = 'sk-super-secret-credential';
+
+  try {
+    const service = createProviderModelsService({
+      assertProviderAuthenticated: async () => undefined,
+      cachePath,
+      resolveProvider: (provider) => ({
+        models: {
+          getSupportedModels: async () => ({
+            models: createModels('configured-catalog'),
+            fingerprint: computeModelsFingerprint({
+              baseUrl: 'https://aiapi.tcredit.com/v1',
+              credential: secret,
+              modelProvider: 'tc-credit',
+              model: 'gpt-5.6-sol',
+            }),
+            cacheable: true,
+          }),
+          getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+        },
+      }),
+    });
+
+    await service.getProviderModels('codex');
+
+    const raw = await readFile(cachePath, 'utf8');
+    assert.ok(!raw.includes(secret));
+    assert.ok(raw.includes('codex:'));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('R23: an unchanged fingerprint reuses the cached catalog without loading the facet', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-cache-fingerprint-'));
+  const cachePath = path.join(tempRoot, 'models-cache.json');
+  let loadCount = 0;
+
+  try {
+    const makeService = () => createProviderModelsService({
+      assertProviderAuthenticated: async () => undefined,
+      cachePath,
+      resolveProvider: (provider) => ({
+        models: {
+          getCachedCatalogFingerprint: () => 'fp-stable',
+          getSupportedModels: async () => {
+            loadCount += 1;
+            return { models: createModels('configured-catalog'), fingerprint: 'fp-stable', cacheable: true };
+          },
+          getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+        },
+      }),
+    });
+
+    const service = makeService();
+    const first = await service.getProviderModels('codex');
+    assert.equal(first.cache.source, 'fresh');
+
+    const memoryHit = await service.getProviderModels('codex');
+    assert.equal(memoryHit.cache.source, 'memory');
+    assert.equal(memoryHit.models.DEFAULT, 'configured-catalog');
+    assert.equal(loadCount, 1);
+
+    // 新实例读磁盘缓存，同样不触发 facet。
+    const diskHit = await makeService().getProviderModels('codex');
+    assert.equal(diskHit.cache.source, 'disk');
+    assert.equal(loadCount, 1);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });

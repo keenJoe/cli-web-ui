@@ -35,6 +35,8 @@ type CommandResultModalProps = {
   providerModelsRefreshing: boolean;
   onHardRefreshProviderModels: () => void;
   currentSessionId: string | null;
+  /** Set when the active provider is definitively unauthenticated: the model selector renders nothing. */
+  modelMenuHidden: boolean;
   onSelectProviderModel: (
     provider: LLMProvider,
     model: string,
@@ -514,6 +516,7 @@ export default function CommandResultModal({
   providerModelsRefreshing,
   onHardRefreshProviderModels,
   currentSessionId,
+  modelMenuHidden,
   onSelectProviderModel,
 }: CommandResultModalProps) {
   const isOpen = Boolean(payload);
@@ -595,7 +598,7 @@ export default function CommandResultModal({
 
         <div className="settings-content-enter min-h-0 flex-1 overflow-hidden px-4 py-4 sm:px-6 sm:py-5">
           {payload?.kind === 'help' && <HelpContent data={payload.data as HelpCommandData} />}
-          {payload?.kind === 'models' && (
+          {payload?.kind === 'models' && !modelMenuHidden && (
             <ModelsContent
               data={payload.data as ModelCommandData}
               providerModelCatalog={providerModelCatalog}

@@ -114,6 +114,24 @@ export interface ProviderDefinition extends IProvider {
 // ---------------------------
 //----------------- PROVIDER MODEL INTERFACE ------------
 /**
+ * Provider model catalog with its cache identity.
+ *
+ * `fingerprint` keys the central models service cache: `hash(base_url +
+ * credential_hash + model_provider + model)`, empty when no configuration
+ * drives the result. `cacheable` is false only for fallbacks produced by a
+ * failed configured API fetch, which must never enter the long-lived disk
+ * cache. The facet owns how the fingerprint is computed (E17); the service
+ * only keys on it.
+ */
+export type ProviderModelsCatalog = {
+  models: ProviderModelsDefinition;
+  /** hash(base_url + credential_hash + model_provider + model); '' = no configuration. */
+  fingerprint: string;
+  /** false = fallback from a failed configured API fetch, short-lived only. */
+  cacheable: boolean;
+};
+
+/**
  * Model catalog contract for one provider.
  *
  * Implementations are responsible for resolving the provider's currently
@@ -133,9 +151,21 @@ export interface IProviderModels {
   readonly usesCatalogDefaultWhenModelOmitted?: true;
 
   /**
-   * Returns the provider's currently supported model catalog.
+   * Returns the provider's currently supported model catalog together with the
+   * cache identity the central models service keys its cache on.
    */
-  getSupportedModels(): Promise<ProviderModelsDefinition>;
+  getSupportedModels(): Promise<ProviderModelsCatalog>;
+
+  /**
+   * Computes the catalog cache fingerprint from provider configuration only,
+   * without fetching the catalog.
+   *
+   * The central models service calls this before `getSupportedModels` so it
+   * can look up the cache with the same key catalog writes use; absent (or
+   * unconfigured providers returning `''`) keeps the key equivalent to the
+   * provider-only key.
+   */
+  getCachedCatalogFingerprint?(): string;
 
   /**
    * Reads the model the provider itself believes one session is running with.

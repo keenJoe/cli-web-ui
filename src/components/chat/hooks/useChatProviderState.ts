@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { authenticatedFetch } from '../../../utils/api';
 import { useProviderCapabilities } from '../../../hooks/useProviderCapabilities';
 import { PROVIDER_IDS } from '../../llm-logo-provider/providerBranding';
+import { useProviderAuthStatus } from '../../provider-auth/hooks/useProviderAuthStatus';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type {
   ProjectSession,
@@ -84,6 +85,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     status: capabilitiesStatus,
     byProvider: providerCapabilities,
   } = useProviderCapabilities();
+
+  // Subscribe to the shared auth store so status changes made in settings or
+  // onboarding reach the chat page without a full page reload.
+  const { providerAuthStatus } = useProviderAuthStatus();
 
   const [providerModelCatalog, setProviderModelCatalog] = useState<
     Partial<Record<LLMProvider, ProviderModelsDefinition>>
@@ -181,6 +186,29 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   useEffect(() => {
     void loadProviderModels();
   }, [loadProviderModels]);
+
+  // Derived auth state for the active provider. The model menu is fully hidden
+  // only when the provider is definitively unauthenticated (check finished, no
+  // credentials, CLI installed); while the check is still running or failed it
+  // stays visible as a disabled skeleton so the user sees progress, not a
+  // vanishing control.
+  const currentProviderAuthStatus = providerAuthStatus[provider];
+  const modelMenuAvailable = !currentProviderAuthStatus.loading && currentProviderAuthStatus.authenticated;
+  const modelMenuHidden = !currentProviderAuthStatus.loading
+    && !currentProviderAuthStatus.authenticated
+    && currentProviderAuthStatus.installed;
+
+  // A login elsewhere (settings/onboarding) flips the shared store; the models
+  // fetched while unauthenticated fail the backend gate, so a false→true flip
+  // must refetch instead of waiting for a manual refresh.
+  const wasProviderAuthenticatedRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const wasAuthenticated = wasProviderAuthenticatedRef.current;
+    wasProviderAuthenticatedRef.current = modelMenuAvailable;
+    if (wasAuthenticated === false && modelMenuAvailable) {
+      void loadProviderModels();
+    }
+  }, [loadProviderModels, modelMenuAvailable]);
 
   const getCapabilityStatusForProvider = useCallback((targetProvider: LLMProvider): ProviderCapabilityStatus => {
     if (capabilitiesStatus !== 'ready') {
@@ -620,6 +648,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     providerModelCacheCatalog,
     providerModelsLoading,
     providerModelsRefreshing,
+    providerAuthStatus,
+    modelMenuAvailable,
+    modelMenuHidden,
     hardRefreshProviderModels: () => loadProviderModels({ bypassCache: true }),
     selectProviderModel,
     setStoredProviderEffort,

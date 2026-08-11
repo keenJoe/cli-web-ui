@@ -2,6 +2,7 @@ import spawn from 'cross-spawn';
 
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type { ProviderAuthStatus } from '@/shared/types.js';
+import { runCliVersionProbe } from '@/shared/utils.js';
 
 type CursorLoginStatus = {
   authenticated: boolean;
@@ -23,12 +24,7 @@ type CursorAuthDependencies = {
 };
 
 function checkCursorInstalled(): boolean {
-  try {
-    spawn.sync('cursor-agent', ['--version'], { stdio: 'ignore', timeout: 5000 });
-    return true;
-  } catch {
-    return false;
-  }
+  return runCliVersionProbe('cursor-agent', ['--version']);
 }
 
 function readCursorLoginStatus(): Promise<CursorStatusCommandResult> {

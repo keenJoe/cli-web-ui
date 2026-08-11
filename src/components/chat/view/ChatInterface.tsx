@@ -82,6 +82,7 @@ function ChatInterface({
     providerModelCacheCatalog,
     providerModelsLoading,
     providerModelsRefreshing,
+    modelMenuHidden,
     hardRefreshProviderModels,
     selectProviderModel,
     setStoredProviderEffort,
@@ -405,6 +406,7 @@ function ChatInterface({
           availableModelOptions={currentProviderModelOptions}
           onSelectModel={handleSelectComposerModel}
           modelsLoading={providerModelsLoading}
+          modelMenuHidden={modelMenuHidden}
           supportsTokenUsage={supportsTokenUsage}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}
@@ -466,6 +468,7 @@ function ChatInterface({
         providerModelsRefreshing={providerModelsRefreshing}
         onHardRefreshProviderModels={hardRefreshProviderModels}
         currentSessionId={currentSessionId || selectedSession?.id || null}
+        modelMenuHidden={modelMenuHidden}
         onSelectProviderModel={selectProviderModel}
       />
     </PermissionContext.Provider>

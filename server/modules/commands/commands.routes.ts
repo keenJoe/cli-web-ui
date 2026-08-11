@@ -4,6 +4,7 @@ import path from "path";
 import express from "express";
 
 import { parseFrontMatter } from "../../shared/frontmatter.js";
+import { AppError } from "../../shared/utils.js";
 
 type CommandsRouterDependencies = {
   fileSystem: typeof import('node:fs/promises');
@@ -522,6 +523,17 @@ router.post("/execute", async (req, res) => {
           `Error executing built-in command ${commandName}:`,
           error,
         );
+        if (error instanceof AppError) {
+          // Mirror the REST catalog endpoint's auth-gate shape so every entry
+          // point reports the same error code and status.
+          return res.status(error.statusCode).json({
+            error: {
+              code: error.code,
+              message: error.message,
+            },
+            command: commandName,
+          });
+        }
         return res.status(500).json({
           error: "Command execution failed",
           message: error.message,

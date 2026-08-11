@@ -76,6 +76,8 @@ interface ChatComposerProps {
   availableModelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
+  /** Set when the active provider is definitively unauthenticated: the model menu renders nothing. */
+  modelMenuHidden: boolean;
   supportsTokenUsage: boolean;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
@@ -142,6 +144,7 @@ export default function ChatComposer({
   availableModelOptions,
   onSelectModel,
   modelsLoading,
+  modelMenuHidden,
   supportsTokenUsage,
   tokenBudget,
   onShowTokenUsage,
@@ -449,6 +452,7 @@ export default function ChatComposer({
               modelOptions={availableModelOptions}
               onSelectModel={onSelectModel}
               modelsLoading={modelsLoading}
+              hidden={modelMenuHidden}
             />
 
             <ComposerPermissionMenu

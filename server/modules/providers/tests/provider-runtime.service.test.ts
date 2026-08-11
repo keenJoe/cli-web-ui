@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { createProviderRuntimeService } from '@/modules/providers/services/provider-runtime.service.js';
 import type { IProviderRuntime, ProviderDefinition } from '@/shared/interfaces.js';
 import type {
@@ -9,6 +10,7 @@ import type {
   NormalizedMessage,
   ProviderRunRequest,
 } from '@/shared/types.js';
+import { AppError } from '@/shared/utils.js';
 
 function createRuntime(overrides: Partial<IProviderRuntime> = {}): IProviderRuntime {
   return {
@@ -343,6 +345,85 @@ test('records an explicit Agent model when resuming an existing app session', as
     sessionId: 'agent-http-session',
     model: 'sonnet',
   }]);
+});
+
+test('run completes normally when session-model recording rejects on the auth gate', async () => {
+  const original = providerModelsService.setSessionModel;
+  providerModelsService.setSessionModel = async () => {
+    throw new AppError('provider 未安装或未认证', {
+      code: 'PROVIDER_NOT_AUTHENTICATED',
+      statusCode: 401,
+    });
+  };
+  const warns: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warns.push(args);
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const runtime = createRuntime();
+    const service = createService([createProvider('claude', runtime)], {
+      sessionIdentity: {
+        ensureAppSession() {},
+        assignProviderSessionId() {},
+      },
+    });
+
+    const outcome = await service.getRunner('claude')(
+      'hello',
+      { sessionId: 'session-1', projectPath: '/workspace/project', model: 'haiku' },
+      { send() {} },
+    );
+
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(outcome, {
+      status: 'completed',
+      providerSessionId: 'native-session-1',
+      exitCode: 0,
+    });
+    assert.equal(warns.length, 0);
+    assert.equal(unhandled.length, 0);
+  } finally {
+    providerModelsService.setSessionModel = original;
+    console.warn = originalWarn;
+    process.removeListener('unhandledRejection', onUnhandled);
+  }
+});
+
+test('run completes and warns when session-model recording fails for a non-gate reason', async () => {
+  const original = providerModelsService.setSessionModel;
+  providerModelsService.setSessionModel = async () => {
+    throw new Error('db write failed');
+  };
+  const warns: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warns.push(args);
+  try {
+    const runtime = createRuntime();
+    const service = createService([createProvider('claude', runtime)], {
+      sessionIdentity: {
+        ensureAppSession() {},
+        assignProviderSessionId() {},
+      },
+    });
+
+    const outcome = await service.getRunner('claude')(
+      'hello',
+      { sessionId: 'session-1', projectPath: '/workspace/project', model: 'haiku' },
+      { send() {} },
+    );
+
+    assert.deepEqual(outcome, {
+      status: 'completed',
+      providerSessionId: 'native-session-1',
+      exitCode: 0,
+    });
+    assert.equal(warns.length, 1);
+  } finally {
+    providerModelsService.setSessionModel = original;
+    console.warn = originalWarn;
+  }
 });
 
 test('routes permission decisions through provider-owned runtime capabilities', () => {

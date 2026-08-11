@@ -22,6 +22,7 @@ import { AppError } from '@/shared/utils.js';
 
 async function withProviderServer(run: (baseUrl: string) => Promise<void>): Promise<void> {
   const app = express();
+  app.use(express.json());
   app.use('/api/providers', providerRoutes);
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof AppError) {
@@ -162,5 +163,57 @@ test('session details route rejects a lookup without a provider', { concurrency:
       assert.equal(response.status, 400);
       assert.deepEqual(await response.json(), { error: 'PROVIDER_REQUIRED' });
     });
+  });
+});
+
+test('models route rejects an uninstalled provider with the auth gate error', { concurrency: false }, async () => {
+  const previousCliPath = process.env.PI_CLI_PATH;
+  process.env.PI_CLI_PATH = path.join(os.tmpdir(), 'cloudcli-test-missing-pi-cli');
+
+  await withProviderServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/providers/pi/models`);
+
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: 'PROVIDER_NOT_AUTHENTICATED' });
+  });
+
+  if (previousCliPath === undefined) {
+    delete process.env.PI_CLI_PATH;
+  } else {
+    process.env.PI_CLI_PATH = previousCliPath;
+  }
+});
+
+test('active-model route rejects an unauthenticated provider with the auth gate error', { concurrency: false }, async () => {
+  const previousCliPath = process.env.PI_CLI_PATH;
+  process.env.PI_CLI_PATH = path.join(os.tmpdir(), 'cloudcli-test-missing-pi-cli');
+
+  await withProviderServer(async (baseUrl) => {
+    const response = await fetch(
+      `${baseUrl}/api/providers/pi/sessions/session-1/active-model`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'pi-model' }),
+      },
+    );
+
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: 'PROVIDER_NOT_AUTHENTICATED' });
+  });
+
+  if (previousCliPath === undefined) {
+    delete process.env.PI_CLI_PATH;
+  } else {
+    process.env.PI_CLI_PATH = previousCliPath;
+  }
+});
+
+test('models route keeps the existing UNSUPPORTED_PROVIDER error for unregistered providers', async () => {
+  await withProviderServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/providers/nonexistent/models`);
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'UNSUPPORTED_PROVIDER' });
   });
 });

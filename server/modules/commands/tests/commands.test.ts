@@ -5,6 +5,8 @@ import test from 'node:test';
 
 import express from 'express';
 
+import { AppError } from '@/shared/utils.js';
+
 import { createCommandsRouter } from '../commands.routes.js';
 
 /**
@@ -13,16 +15,20 @@ import { createCommandsRouter } from '../commands.routes.js';
  * session wins, otherwise the client's requested model, otherwise the catalog
  * default.
  */
-function createModelsService(sessionModels: Record<string, string> = {}) {
+function createModelsService(
+  sessionModels: Record<string, string> = {},
+  overrides: { getProviderModels?: () => Promise<never> } = {},
+) {
   return {
-    getProviderModels: async () => ({
-      models: { OPTIONS: [{ value: 'default', label: 'Default' }], DEFAULT: 'default' },
-      cache: {
-        updatedAt: '2026-01-01T00:00:00.000Z',
-        expiresAt: '2026-01-02T00:00:00.000Z',
-        source: 'fresh' as const,
-      },
-    }),
+    getProviderModels: overrides.getProviderModels
+      ?? (async () => ({
+        models: { OPTIONS: [{ value: 'default', label: 'Default' }], DEFAULT: 'default' },
+        cache: {
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          expiresAt: '2026-01-02T00:00:00.000Z',
+          source: 'fresh' as const,
+        },
+      })),
     getCurrentActiveModel: async () => ({ model: 'default' }),
     setSessionModel: () => null,
     resolveSessionModel: async (
@@ -127,4 +133,46 @@ test('cost and status commands report the same resolved model as /models', async
 
   assert.equal((cost.data as { model: string }).model, 'haiku');
   assert.equal((status.data as { model: string }).model, 'haiku');
+});
+
+test('models command surfaces the provider auth gate error instead of a model list', async () => {
+  const router = createCommandsRouter({
+    fileSystem: {
+      readFile: async () => JSON.stringify({ name: 'claude-code-ui', version: '0.0.0-test' }),
+    } as unknown as typeof import('node:fs/promises'),
+    homeDirectory: () => '/home/test',
+    appRoot: '/app',
+    models: createModelsService({}, {
+      getProviderModels: async () => {
+        throw new AppError('provider 未安装或未认证', {
+          code: 'PROVIDER_NOT_AUTHENTICATED',
+          statusCode: 401,
+        });
+      },
+    }) as never,
+    runtime: {
+      uptime: () => 0,
+      memoryUsage: () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }),
+      version: 'v22', platform: 'linux', pid: 1,
+    },
+  });
+  const app = express().use(express.json()).use('/api/commands', router);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const address = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/commands/execute`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commandName: '/models', context: { provider: 'claude' } }),
+    });
+
+    assert.equal(response.status, 401);
+    const body = await response.json() as { error?: { code: string; message: string } };
+    assert.deepEqual(body.error, {
+      code: 'PROVIDER_NOT_AUTHENTICATED',
+      message: 'provider 未安装或未认证',
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
