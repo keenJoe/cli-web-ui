@@ -99,7 +99,31 @@ test('start injects --no-extensions and merges caller options', async () => {
   const args = (captured.options?.args as string[]) ?? [];
   assert.deepEqual(args, ['--no-extensions']);
   assert.equal(captured.options?.cwd, '/tmp/work');
-  assert.deepEqual(captured.options?.env, { FOO: 'bar' });
+  assert.equal((captured.options?.env as Record<string, string>).FOO, 'bar');
+});
+
+test('start blanks inherited Anthropic credentials so Pi lists only its own providers', async () => {
+  const fake = new FakeUnderlyingClient();
+  const { client, captured } = makeClient(fake);
+
+  await client.start();
+
+  assert.deepEqual(captured.options?.env, {
+    ANTHROPIC_AUTH_TOKEN: '',
+    ANTHROPIC_API_KEY: '',
+  });
+});
+
+test('start lets an explicit caller credential override the blanking', async () => {
+  const fake = new FakeUnderlyingClient();
+  const { client, captured } = makeClient(fake, { env: { ANTHROPIC_AUTH_TOKEN: 'sk-explicit' } });
+
+  await client.start();
+
+  assert.equal(
+    (captured.options?.env as Record<string, string>).ANTHROPIC_AUTH_TOKEN,
+    'sk-explicit',
+  );
 });
 
 test('start merges caller args after the fixed args', async () => {
