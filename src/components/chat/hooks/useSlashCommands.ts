@@ -80,6 +80,16 @@ const isPromiseLike = (value: unknown): value is Promise<unknown> =>
 const isSkillCommand = (command: SlashCommand) =>
   command.type === 'skill' || command.metadata?.type === 'skill';
 
+const isCustomCommand = (command: SlashCommand) => command.type === 'custom';
+
+/**
+ * Custom commands are scanned from `.claude/commands/**` — a Claude-only
+ * convention. Other providers cannot resolve them (Codex, for one, has no
+ * slash-command concept at all and exposes `$skill` invocations instead), so
+ * offering them there would send a Claude prompt body as plain text.
+ */
+const CUSTOM_COMMAND_PROVIDER: LLMProvider = 'claude';
+
 const dedupeProviderSkills = (skills: ProviderSkill[]): ProviderSkill[] => {
   const seenCommands = new Set<string>();
 
@@ -275,9 +285,12 @@ export function useSlashCommands({
     const loadedSlashCommands = loadedCatalog?.projectContextKey === projectContextKey
       ? loadedCatalog.commands
       : [];
-    return skillsAreAvailable && loadedCatalog?.skillsProvider === provider
+    const withSkills = skillsAreAvailable && loadedCatalog?.skillsProvider === provider
       ? loadedSlashCommands
       : loadedSlashCommands.filter((command) => !isSkillCommand(command));
+    return provider === CUSTOM_COMMAND_PROVIDER
+      ? withSkills
+      : withSkills.filter((command) => !isCustomCommand(command));
   }, [loadedCatalog, projectContextKey, provider, skillsAreAvailable]);
   const filteredCommands = useMemo(
     () => filterSlashCommands(slashCommands, commandQuery),
@@ -367,16 +380,27 @@ export function useSlashCommands({
     [onExecuteCommand, resetCommandMenuState],
   );
 
+  /**
+   * Skills and custom commands are provider-native invocations: the provider
+   * resolves the definition itself, so the composer only inserts the literal
+   * `/name` (or `$name`) and lets the user append arguments. Built-in commands
+   * are app features (token usage, settings) and still run through the server.
+   */
+  const isInsertedCommand = useCallback(
+    (command: SlashCommand) => isSkillCommand(command) || isCustomCommand(command),
+    [],
+  );
+
   const selectCommandFromKeyboard = useCallback(
     (command: SlashCommand) => {
-      if (isSkillCommand(command)) {
+      if (isInsertedCommand(command)) {
         insertCommandIntoInput(command);
         return;
       }
 
       executeNonSkillCommand(command);
     },
-    [executeNonSkillCommand, insertCommandIntoInput],
+    [executeNonSkillCommand, insertCommandIntoInput, isInsertedCommand],
   );
 
   const handleCommandSelect = useCallback(
@@ -399,14 +423,21 @@ export function useSlashCommands({
       }
 
       trackCommandUsage(command);
-      if (isSkillCommand(command)) {
+      if (isInsertedCommand(command)) {
         insertCommandIntoInput(command);
         return;
       }
 
       executeNonSkillCommand(command);
     },
-    [selectedProject, slashCommands, trackCommandUsage, insertCommandIntoInput, executeNonSkillCommand],
+    [
+      selectedProject,
+      slashCommands,
+      trackCommandUsage,
+      insertCommandIntoInput,
+      executeNonSkillCommand,
+      isInsertedCommand,
+    ],
   );
 
   const handleToggleCommandMenu = useCallback(() => {

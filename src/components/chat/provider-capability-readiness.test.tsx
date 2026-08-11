@@ -786,12 +786,12 @@ test('skill slash commands require a ready supportsSkills capability while built
 
       await waitForCommands();
       assert.equal(skillRequests, 0);
-      assert.deepEqual(commandNames(), ['/help', '/custom']);
+      assert.deepEqual(commandNames(), ['/help']);
 
       await rerender({ ...args, providerCapabilityStatus: 'error' });
       await waitForCommands();
       assert.equal(skillRequests, 0);
-      assert.deepEqual(commandNames(), ['/help', '/custom']);
+      assert.deepEqual(commandNames(), ['/help']);
 
       await rerender({
         ...args,
@@ -800,7 +800,7 @@ test('skill slash commands require a ready supportsSkills capability while built
       });
       await waitForCommands();
       assert.equal(skillRequests, 0);
-      assert.deepEqual(commandNames(), ['/help', '/custom']);
+      assert.deepEqual(commandNames(), ['/help']);
 
       await rerender({
         ...args,
@@ -809,14 +809,14 @@ test('skill slash commands require a ready supportsSkills capability while built
       });
       await waitForCommands();
       assert.equal(skillRequests, 1);
-      assert.deepEqual(commandNames(), ['/help', '/pi:inspect', '/custom']);
+      assert.deepEqual(commandNames(), ['/help', '/pi:inspect']);
       assert.equal(commandRequests >= 1, true);
     },
   });
   storage.clear();
 });
 
-test('provider skill request failures preserve built-in and custom slash commands', async () => {
+test('provider skill request failures preserve built-in slash commands', async () => {
   storage.clear();
   let skillRequests = 0;
 
@@ -847,7 +847,7 @@ test('provider skill request failures preserve built-in and custom slash command
       assert.equal(skillRequests, 1);
       assert.deepEqual(
         getState().filteredCommands.map((command) => command.name),
-        ['/help', '/custom'],
+        ['/help'],
       );
     },
   });
@@ -903,13 +903,15 @@ test('switching providers hides stale skills while the next provider catalog is 
     run: async (getState, rerender) => {
       const commandNames = () => getState().filteredCommands.map((command) => command.name);
       await act(async () => new Promise((resolve) => setTimeout(resolve, 25)));
-      assert.deepEqual(commandNames(), ['/help', '/pi:inspect', '/custom']);
+      assert.deepEqual(commandNames(), ['/help', '/pi:inspect']);
       const stalePiSkill = getState().filteredCommands.find((command) => command.name === '/pi:inspect');
       assert.ok(stalePiSkill);
 
       await rerender({ ...args, provider: 'claude' });
 
       assert.equal(commandRequests, 2);
+      // Claude owns `.claude/commands/**`, so the already-loaded custom command
+      // becomes visible again while its catalog refresh is still pending.
       assert.deepEqual(commandNames(), ['/help', '/custom']);
       await act(async () => getState().handleCommandSelect(stalePiSkill, 1, false));
       assert.equal(getState().input, '');
@@ -980,14 +982,14 @@ test('loaded skill commands fail closed immediately when skill capability become
       run: async (getState, rerender) => {
         const commandNames = () => getState().filteredCommands.map((command) => command.name);
         await act(async () => new Promise((resolve) => setTimeout(resolve, 25)));
-        assert.deepEqual(commandNames(), ['/help', '/pi:inspect', '/custom']);
+        assert.deepEqual(commandNames(), ['/help', '/pi:inspect']);
 
         await rerender({ ...args, ...unavailableCapability });
 
         assert.equal(commandRequests, 2);
         assert.deepEqual(
           commandNames(),
-          ['/help', '/custom'],
+          ['/help'],
           `${unavailableCapability.providerCapabilityStatus}/${unavailableCapability.supportsSkills} must hide stale skills`,
         );
 
@@ -1000,10 +1002,61 @@ test('loaded skill commands fail closed immediately when skill capability become
           }));
           await Promise.resolve();
         });
-        assert.deepEqual(commandNames(), ['/help', '/custom']);
+        assert.deepEqual(commandNames(), ['/help']);
       },
     });
   }
+  storage.clear();
+});
+
+test('custom commands are Claude-only and selecting one fills the composer instead of expanding it', async () => {
+  storage.clear();
+  let executeRequests = 0;
+  const claudeArgs = createComposerArgs({
+    provider: 'claude',
+    providerCapabilityStatus: 'ready',
+    supportsSkills: false,
+  });
+
+  await withMountedHook<ComposerArgs, ReturnType<UseChatComposerState>>({
+    modulePath: '/src/components/chat/hooks/useChatComposerState.ts',
+    exportName: 'useChatComposerState',
+    args: claudeArgs,
+    fetchImpl: async (request) => {
+      const url = String(request);
+      if (url.includes('/api/commands/list')) {
+        return jsonResponse({
+          builtIn: [{ name: '/help', description: 'Show help' }],
+          custom: [{ name: '/opsx:apply', description: 'Implement tasks' }],
+        });
+      }
+      if (url.includes('/api/commands/execute')) {
+        executeRequests += 1;
+        return jsonResponse({ type: 'custom', content: 'THE WHOLE COMMAND BODY' });
+      }
+      return jsonResponse([]);
+    },
+    run: async (getState, rerender) => {
+      const commandNames = () => getState().filteredCommands.map((command) => command.name);
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 25)));
+      assert.deepEqual(commandNames(), ['/help', '/opsx:apply']);
+
+      const custom = getState().filteredCommands.find((command) => command.name === '/opsx:apply');
+      assert.ok(custom);
+      await act(async () => getState().handleCommandSelect(custom, 1, false));
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 25)));
+
+      // The provider resolves the definition itself: the composer gets the
+      // literal invocation, and the server-side expansion is never requested.
+      assert.equal(getState().input, '/opsx:apply ');
+      assert.equal(executeRequests, 0);
+
+      // Every other provider reads a different catalog and cannot resolve it.
+      await rerender({ ...claudeArgs, provider: 'codex' });
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 25)));
+      assert.deepEqual(commandNames(), ['/help']);
+    },
+  });
   storage.clear();
 });
 

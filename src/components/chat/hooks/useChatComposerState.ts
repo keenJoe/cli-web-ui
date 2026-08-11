@@ -396,35 +396,6 @@ export function useChatComposerState({
     setCommandModalPayload(null);
   }, []);
 
-  const handleCustomCommand = useCallback(async (result: CommandExecutionResult) => {
-    const { content, hasBashCommands } = result;
-
-    if (hasBashCommands) {
-      const confirmed = window.confirm(
-        'This command contains bash commands that will be executed. Do you want to proceed?',
-      );
-      if (!confirmed) {
-        addMessage({
-          type: 'assistant',
-          content: 'Command execution cancelled',
-          timestamp: Date.now(),
-        });
-        return;
-      }
-    }
-
-    const commandContent = content || '';
-    setInput(commandContent);
-    inputValueRef.current = commandContent;
-
-    // Defer submit to next tick so the command text is reflected in UI before dispatching.
-    setTimeout(() => {
-      if (handleSubmitRef.current) {
-        handleSubmitRef.current(createFakeSubmitEvent());
-      }
-    }, 0);
-  }, [addMessage]);
-
   const executeCommand = useCallback(
     async (command: SlashCommand, rawInput?: string, options?: { preserveInput?: boolean }) => {
       if (!command || !selectedProject) {
@@ -479,8 +450,6 @@ export function useChatComposerState({
             setInput('');
             inputValueRef.current = '';
           }
-        } else if (result.type === 'custom') {
-          await handleCustomCommand(result);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -496,7 +465,6 @@ export function useChatComposerState({
       currentProviderModel,
       currentSessionId,
       handleBuiltInCommand,
-      handleCustomCommand,
       input,
       provider,
       selectedProject,
@@ -855,7 +823,11 @@ export function useChatComposerState({
                 metadata: { type: 'builtin' },
               } as SlashCommand)
             : undefined);
-        if (matchedCommand && matchedCommand.type !== 'skill') {
+        // Skills and custom commands are provider-native invocations: they are
+        // sent verbatim so the provider resolves the definition itself, with
+        // its declared tool permissions intact. Only app-owned built-ins are
+        // intercepted here.
+        if (matchedCommand && matchedCommand.type !== 'skill' && matchedCommand.type !== 'custom') {
           executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
           setInput('');
           inputValueRef.current = '';

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import express from 'express';
@@ -174,5 +178,46 @@ test('models command surfaces the provider auth gate error instead of a model li
     });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('nested custom commands are named with the colon separator the provider accepts', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'commands-list-'));
+  try {
+    const commandsDir = path.join(dir, '.claude', 'commands', 'opsx');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(commandsDir, 'apply.md'),
+      '---\ndescription: Implement tasks\n---\n\nImplement tasks from an OpenSpec change.\n',
+    );
+
+    const router = createCommandsRouter({
+      fileSystem: fsPromises,
+      homeDirectory: () => path.join(dir, 'nonexistent-home'),
+      appRoot: '/app',
+      models: createModelsService() as never,
+      runtime: {
+        uptime: () => 0,
+        memoryUsage: () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }),
+        version: 'v22', platform: 'linux', pid: 1,
+      },
+    });
+    const app = express().use(express.json()).use('/api/commands', router);
+    const server = app.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    try {
+      const address = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/commands/list`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectPath: dir }),
+      });
+
+      const body = await response.json() as { custom: Array<{ name: string }> };
+      assert.deepEqual(body.custom.map((command) => command.name), ['/opsx:apply']);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

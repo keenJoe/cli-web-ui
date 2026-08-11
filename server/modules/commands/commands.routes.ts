@@ -132,9 +132,16 @@ async function scanCommandsDirectory(dir, baseDir, namespace) {
 
           // Calculate relative path from baseDir for command name
           const relativePath = path.relative(baseDir, fullPath);
-          // Remove .md extension and convert to command name
+          // Remove .md extension and convert to the invocation Claude accepts:
+          // directory nesting is expressed with `:`, matching the CLI (a file at
+          // `opsx/apply.md` is invoked as `/opsx:apply`). The name is sent to
+          // the provider verbatim, so this must not use `/` as the separator.
           const commandName =
-            "/" + relativePath.replace(/\.md$/, "").replace(/\\/g, "/");
+            "/" +
+            relativePath
+              .replace(/\.md$/, "")
+              .replace(/\\/g, "/")
+              .replace(/\//g, ":");
 
           // Extract description from frontmatter or first line of content
           let description = frontmatter.description || "";
