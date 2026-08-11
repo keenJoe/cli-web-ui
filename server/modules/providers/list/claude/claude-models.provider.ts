@@ -127,6 +127,38 @@ export const findClaudeModelOption = (model: string | undefined | null): Provide
   return CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
 };
 
+// The gateway `/v1/models` payload only carries `{value, label}` and drops the
+// reasoning-effort metadata. Re-attach it by model family so the composer's
+// Reasoning selector keeps working for config-driven catalogs.
+const CLAUDE_EFFORT_BY_FAMILY: Record<string, ProviderModelOption['effort']> = {
+  opus: {
+    default: 'high',
+    values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }, { value: 'max' }],
+  },
+  fable: {
+    default: 'high',
+    values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }, { value: 'max' }],
+  },
+  sonnet: {
+    default: 'high',
+    values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'max' }],
+  },
+};
+
+const resolveClaudeEffortForModel = (value: string): ProviderModelOption['effort'] | undefined => {
+  const normalized = value.toLowerCase();
+  // haiku has no reasoning effort; leave it undefined so the selector stays hidden.
+  if (normalized.includes('haiku')) {
+    return undefined;
+  }
+  for (const [family, effort] of Object.entries(CLAUDE_EFFORT_BY_FAMILY)) {
+    if (normalized.includes(family)) {
+      return effort;
+    }
+  }
+  return undefined;
+};
+
 const buildClaudeModelsDefinitionFromFetched = (
   fetched: Array<{ value: string; label: string }>,
 ): ProviderModelsDefinition => {
@@ -135,7 +167,10 @@ const buildClaudeModelsDefinitionFromFetched = (
   }
 
   return {
-    OPTIONS: fetched,
+    OPTIONS: fetched.map((option) => {
+      const effort = resolveClaudeEffortForModel(option.value);
+      return effort ? { ...option, effort } : option;
+    }),
     DEFAULT: fetched[0]?.value ?? CLAUDE_FALLBACK_MODELS.DEFAULT,
   };
 };
