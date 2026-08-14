@@ -154,3 +154,10 @@ electron/*.tar.gz
 
 .playwright-mcp/
 paseo.json
+
+# Agent / tool artifacts (session data, generated output)
+.codex/
+.pi/
+.pi-glla/
+.playwright-cli/
+output/
