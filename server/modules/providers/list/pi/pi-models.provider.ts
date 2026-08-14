@@ -10,6 +10,10 @@
  * returns no models is surfaced as `PI_NOT_AUTHENTICATED` rather than a fake
  * empty catalog, so callers never mistake "not authenticated" for "success".
  */
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import type { IProviderModels, ProviderModelsCatalog } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
@@ -17,6 +21,8 @@ import type {
   ProviderModelsDefinition,
 } from '@/shared/types.js';
 import { AppError, buildDefaultProviderCurrentActiveModel } from '@/shared/utils.js';
+
+import { PiPaths } from './pi-paths.provider.js';
 
 /** One model row as returned by the Pi RPC `get_available_models` call. */
 export type PiModelRow = {
@@ -60,13 +66,52 @@ const mapModel = (row: PiModelRow): ProviderModelOption => ({
   effort: row.reasoning ? { values: PI_THINKING_EFFORTS } : undefined,
 });
 
+/**
+ * Resolves the default path to Pi's model catalog config (`models.json` in the
+ * agent directory). Used when no explicit path is injected so production
+ * wiring reads the same file Pi itself loads.
+ */
+const getDefaultModelsConfigPath = (): string =>
+  path.join(new PiPaths().getAgentDir(), 'models.json');
+
+/**
+ * Computes the cache identity for the Pi model catalog from `models.json`.
+ *
+ * The fingerprint hashes the raw config file content, so any change to the
+ * declared providers or models invalidates the old catalog cache entry without
+ * spawning a Pi probe. A missing or unreadable file yields an empty
+ * fingerprint, keeping the cache key equivalent to the provider-only key used
+ * for an unconfigured Pi install.
+ */
+const computePiModelsFingerprint = (configPath: string): string => {
+  let raw: string;
+  try {
+    raw = readFileSync(configPath, 'utf8');
+  } catch {
+    return '';
+  }
+
+  return createHash('sha256').update(raw).digest('hex');
+};
+
+/** Options for {@link PiModelsProvider}. */
+export type PiModelsProviderOptions = {
+  /**
+   * Override the `models.json` path the fingerprint reads. Tests inject a
+   * temp file; production leaves it unset to resolve the real Pi agent dir.
+   */
+  modelsConfigPath?: string;
+};
+
 export class PiModelsProvider implements IProviderModels {
   readonly usesCatalogDefaultWhenModelOmitted = true as const;
 
   private readonly rpc: PiModelsRpc;
+  private readonly modelsConfigPath: string;
 
-  constructor(rpc: PiModelsRpc) {
+  constructor(rpc: PiModelsRpc, options: PiModelsProviderOptions = {}) {
     this.rpc = rpc;
+    this.modelsConfigPath = options.modelsConfigPath ?? getDefaultModelsConfigPath();
   }
 
   async getSupportedModels(): Promise<ProviderModelsCatalog> {
@@ -98,14 +143,13 @@ export class PiModelsProvider implements IProviderModels {
 
     return {
       models,
-      fingerprint: '',
+      fingerprint: this.getCachedCatalogFingerprint(),
       cacheable: true,
     };
   }
 
   getCachedCatalogFingerprint(): string {
-    // Pi 无配置文件驱动模型列表，空指纹使缓存键等价于 provider-only 键。
-    return '';
+    return computePiModelsFingerprint(this.modelsConfigPath);
   }
 
   async getCurrentActiveModel(_sessionId?: string): Promise<ProviderCurrentActiveModel> {
