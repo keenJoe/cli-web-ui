@@ -10,6 +10,7 @@ import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
+import { useComposerGitStatus } from '../hooks/useComposerGitStatus';
 import { useSessionStore } from '../../../stores/useSessionStore';
 import { getProviderBrand } from '../../llm-logo-provider/providerBranding';
 
@@ -36,10 +37,13 @@ function ChatInterface({
   externalMessageUpdate,
   newSessionTrigger,
   onShowAllTasks,
+  onOpenGitPanel,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { subscribe } = useWebSocket();
   const { t } = useTranslation('chat');
+
+  const gitStatus = useComposerGitStatus(selectedProject);
 
   const sessionStore = useSessionStore();
   const streamTimerRef = useRef<number | null>(null);
@@ -407,6 +411,8 @@ function ChatInterface({
           onSelectModel={handleSelectComposerModel}
           modelsLoading={providerModelsLoading}
           modelMenuHidden={modelMenuHidden}
+          gitStatus={gitStatus}
+          onOpenGitPanel={onOpenGitPanel ?? (() => {})}
           supportsTokenUsage={supportsTokenUsage}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}
@@ -453,7 +459,7 @@ function ChatInterface({
           onTextareaInput={handleTextareaInput}
           isInputFocused={isInputFocused}
           onInputFocusChange={handleInputFocusChange}
-          placeholder={t('input.placeholder', { provider: selectedProviderLabel })}
+          placeholder=""
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
         />

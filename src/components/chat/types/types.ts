@@ -145,4 +145,6 @@ export interface ChatInterfaceProps {
   newSessionTrigger?: number;
   onTaskClick?: (...args: unknown[]) => void;
   onShowAllTasks?: (() => void) | null;
+  /** Switches the main view to the GitPanel tab (used by the composer's git chip). */
+  onOpenGitPanel?: () => void;
 }

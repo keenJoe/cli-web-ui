@@ -137,6 +137,10 @@
       "willSend": "Will send when this finishes",
       "edit": "Edit queued message",
       "delete": "Delete queued message"
+    },
+    "gitBranch": {
+      "tooltip": "Open git panel",
+      "branch": "Git branch {{branch}} with {{count}} uncommitted changes"
     }
   },
   "composer": {

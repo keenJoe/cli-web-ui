@@ -178,6 +178,7 @@ function MainContent({
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}
                 onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
+                onOpenGitPanel={() => setActiveTab('git')}
               />
             </ErrorBoundary>
           </div>

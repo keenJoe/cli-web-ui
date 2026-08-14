@@ -5,3 +5,4 @@ export {
   webSocketSessionChangePublisher,
   webSocketSessionRunStateReader,
 } from './services/session-application-ports.adapter.js';
+export { webSocketGitStatusPublisher } from './services/git-status-websocket-publisher.service.js';

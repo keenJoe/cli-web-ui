@@ -1,6 +1,7 @@
 import type {
   FetchHistoryOptions,
   FetchHistoryResult,
+  GitStatusEvent,
   LLMProvider,
   McpScope,
   McpTransport,
@@ -395,4 +396,17 @@ export interface ISessionRunStateReader {
     startedAt: number;
     lastSeq: number;
   }>;
+}
+
+/**
+ * Application-owned output port for broadcasting a project's git status delta.
+ *
+ * The git status watcher (server/modules/git) calls this contract after it
+ * recomputes a project's branch and uncommitted summary from a `.git` change.
+ * The WebSocket module supplies the production adapter and tests may supply an
+ * in-memory implementation, keeping the git module independent of any concrete
+ * transport or connection registry — the same seam as `ISessionChangePublisher`.
+ */
+export interface IGitStatusPublisher {
+  publishGitStatusChanged(event: GitStatusEvent): void;
 }

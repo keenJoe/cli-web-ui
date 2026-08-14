@@ -28,6 +28,7 @@ import {
   PromptInputButton,
   PromptInputSubmit,
 } from '../../../../shared/view/ui';
+import type { ComposerGitStatus } from '../../hooks/useComposerGitStatus';
 
 import CommandMenu from './CommandMenu';
 import ActivityIndicator from './ActivityIndicator';
@@ -38,6 +39,7 @@ import TokenUsageSummary from './TokenUsageSummary';
 import QueuedMessageCard from './QueuedMessageCard';
 import ComposerModelMenu from './ComposerModelMenu';
 import ComposerPermissionMenu from './ComposerPermissionMenu';
+import GitBranchChip from './GitBranchChip';
 
 interface MentionableFile {
   name: string;
@@ -78,6 +80,10 @@ interface ChatComposerProps {
   modelsLoading: boolean;
   /** Set when the active provider is definitively unauthenticated: the model menu renders nothing. */
   modelMenuHidden: boolean;
+  /** Current git status for the composer chip; null while loading. */
+  gitStatus: ComposerGitStatus | null;
+  /** Opens the GitPanel tab when the git chip is clicked. */
+  onOpenGitPanel: () => void;
   supportsTokenUsage: boolean;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
@@ -145,6 +151,8 @@ export default function ChatComposer({
   onSelectModel,
   modelsLoading,
   modelMenuHidden,
+  gitStatus,
+  onOpenGitPanel,
   supportsTokenUsage,
   tokenBudget,
   onShowTokenUsage,
@@ -422,6 +430,8 @@ export default function ChatComposer({
               onSelectPermissionMode={onSelectPermissionMode}
               providerLabel={providerLabel}
             />
+
+            <GitBranchChip gitStatus={gitStatus} onOpenGitPanel={onOpenGitPanel} />
 
             {onVoiceTranscript && voiceAvailable && (
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />

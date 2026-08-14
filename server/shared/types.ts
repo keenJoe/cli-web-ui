@@ -195,6 +195,7 @@ export type MessageKind =
 export type GatewayEventKind =
   | 'chat_subscribed'
   | 'session_upserted'
+  | 'git_status_changed'
   | 'loading_progress'
   | 'protocol_error';
 
@@ -761,6 +762,41 @@ export type WorkspacePathValidationResult = {
   valid: boolean;
   resolvedPath?: string;
   error?: string;
+};
+
+// ---------------------------
+//----------------- GIT STATUS BROADCAST EVENT ------------
+/**
+ * Realtime payload pushed to every authenticated chat websocket connection
+ * when a project's current branch or uncommitted summary changes.
+ *
+ * The git status watcher (server/modules/git) produces this event after its
+ * chokidar listener on `.git/HEAD` and `.git/refs/heads` fires, then computes
+ * a fresh status snapshot and broadcasts it through the `IGitStatusPublisher`
+ * port. The websocket adapter serializes it to every open client; the frontend
+ * ChatComposer chip filters by `projectId`.
+ *
+ * `branch` is the short branch name, or the 7-character commit hash when
+ * `isDetached` is true. An empty `branch` with `isGitRepository:false` means the
+ * project directory is no longer a git repository, so the chip must hide.
+ * `uncommittedCount` is the sum of modified + added + deleted + untracked file
+ * counts and deliberately excludes the `staged` bucket, matching the spec's
+ * display requirement; it is `0` for a clean working tree.
+ */
+export type GitStatusEvent = {
+  kind: 'git_status_changed';
+  /** DB primary key of the project the status describes. */
+  projectId: string;
+  /** Branch name, or 7-char short hash when detached. Empty for a non-repo. */
+  branch: string;
+  /** modified + added + deleted + untracked counts; staged excluded. */
+  uncommittedCount: number;
+  /** True when `HEAD` is detached and `branch` holds a short commit hash. */
+  isDetached: boolean;
+  /** False when the project is not (or no longer is) a git repository. */
+  isGitRepository: boolean;
+  /** ISO-8601 timestamp of when the snapshot was computed. */
+  timestamp: string;
 };
 
 // ---------------------------

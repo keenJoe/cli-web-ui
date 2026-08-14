@@ -20,13 +20,19 @@ import {
 } from '@/modules/providers/index.js';
 import {
     createWebSocketServer,
+    webSocketGitStatusPublisher,
     webSocketSessionChangePublisher,
     webSocketSessionRunStateReader,
 } from '@/modules/websocket/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
-import { createGitModule } from './modules/git/index.js';
+import {
+    configureGitStatusPublisher,
+    createGitModule,
+    closeGitStatusWatcher,
+    initializeGitStatusWatcher,
+} from './modules/git/index.js';
 import {
     authenticateToken,
     authenticateWebSocket,
@@ -120,6 +126,9 @@ const wss = createWebSocketServer(server, {
 // transport. Providers depend only on these ports and never on transport state.
 configureSessionChangePublisher(webSocketSessionChangePublisher);
 configureSessionRunStateReader(webSocketSessionRunStateReader);
+// Bind the git status broadcast port to the same transport so the git watcher
+// stays decoupled from the connection registry.
+configureGitStatusPublisher(webSocketGitStatusPublisher);
 
 // Make WebSocket server available to routes
 app.locals.wss = wss;
@@ -370,6 +379,13 @@ async function startServer() {
 
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
+            // Start watching each project's .git for branch/uncommitted changes.
+            // TODO(git-status-runtime-projects): call refreshGitStatusWatchers() from
+            // the project create/delete flow in server/modules/projects so
+            // runtime-added projects get live git status. Until then, projects
+            // created after startup fall back to GET /api/git/status for initial
+            // display and gain live WS updates after a server restart.
+            initializeGitStatusWatcher();
 
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
@@ -378,6 +394,7 @@ async function startServer() {
         });
 
         await closeSessionsWatcher();
+        await closeGitStatusWatcher();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
             try {
