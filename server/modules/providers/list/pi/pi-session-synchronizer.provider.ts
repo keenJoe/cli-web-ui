@@ -7,7 +7,7 @@ import {
 } from '@/shared/utils.js';
 
 import { PiPaths } from './pi-paths.provider.js';
-import { PiSessionStore } from './pi-session-store.provider.js';
+import { PiSessionStore, type PiSessionSnapshot } from './pi-session-store.provider.js';
 
 const FALLBACK_SESSION_NAME = 'Untitled Pi Session';
 
@@ -85,7 +85,8 @@ export class PiSessionSynchronizer implements IProviderSessionSynchronizer {
       sessionsDb.getSessionByProviderSessionId(sessionId, this.provider)
       ?? sessionsDb.getSessionById(sessionId)
     )?.custom_name;
-    const nextName = existingName && existingName !== FALLBACK_SESSION_NAME ? existingName : undefined;
+    const preservedName = existingName && existingName !== FALLBACK_SESSION_NAME ? existingName : undefined;
+    const nextName = preservedName ?? this.extractSessionTitle(snapshot);
 
     const storedId = sessionsDb.createSession(
       sessionId,
@@ -105,5 +106,40 @@ export class PiSessionSynchronizer implements IProviderSessionSynchronizer {
     }
 
     return storedId;
+  }
+
+  /**
+   * Derives a session title from the first user text block on the active
+   * branch.
+   *
+   * Pi transcripts carry no native title field or history file, so mirror the
+   * Cursor indexer: use the first line of the first user message's text block.
+   * Returns undefined when no user text exists so the caller falls back to
+   * {@link FALLBACK_SESSION_NAME}.
+   */
+  private extractSessionTitle(snapshot: PiSessionSnapshot): string | undefined {
+    for (const { role, message } of snapshot.messages) {
+      if (role !== 'user') {
+        continue;
+      }
+      const content = message.content;
+      if (!Array.isArray(content)) {
+        continue;
+      }
+      for (const block of content) {
+        if (typeof block !== 'object' || block === null) {
+          continue;
+        }
+        const record = block as Record<string, unknown>;
+        if (record.type !== 'text' || typeof record.text !== 'string') {
+          continue;
+        }
+        const firstLine = record.text.trim().split('\n')[0]?.trim();
+        if (firstLine) {
+          return firstLine;
+        }
+      }
+    }
+    return undefined;
   }
 }

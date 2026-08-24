@@ -87,6 +87,7 @@ test('Pi synchronizer discovers a new session and upserts its metadata', { concu
       assert.equal(row?.project_path, WORKSPACE);
       assert.equal(row?.jsonl_path, filePath);
       assert.equal(row?.model, 'anthropic/claude-sonnet');
+      assert.equal(row?.custom_name, 'hi', 'title should come from the first user message');
     });
   } finally {
     if (original === undefined) {
