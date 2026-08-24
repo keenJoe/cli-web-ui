@@ -126,7 +126,6 @@ export default function ComposerPermissionMenu({
         aria-haspopup="menu"
         aria-expanded={isOpen}
         aria-label={heading}
-        title={t('input.clickToChangeMode')}
       >
         <ActiveIcon className="h-4 w-4" />
       </button>

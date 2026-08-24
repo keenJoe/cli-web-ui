@@ -121,12 +121,12 @@
     "send": "Send",
     "stop": "Stop",
     "hintText": {
-      "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
-      "enter": "Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
+      "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • / for slash commands",
+      "enter": "Enter to send • Shift+Enter for new line • / for slash commands",
       "queue": "Enter to queue your next message",
       "updateQueued": "Enter to update queued message"
     },
-    "clickToChangeMode": "Click to change permission mode (or press Tab in input)",
+    "clickToChangeMode": "Click to change permission mode",
     "showAllCommands": "Show all commands",
     "clearInput": "Clear input",
     "scrollToBottom": "Scroll to bottom",

@@ -461,7 +461,6 @@ function ChatInterface({
           onInputFocusChange={handleInputFocusChange}
           placeholder=""
           isTextareaExpanded={isTextareaExpanded}
-          sendByCtrlEnter={sendByCtrlEnter}
         />
         </div>
       </div>
