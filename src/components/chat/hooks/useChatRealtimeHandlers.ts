@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 
 import type { ServerEvent } from '../../../contexts/WebSocketContext';
@@ -90,6 +90,37 @@ export function useChatRealtimeHandlers({
     pendingPermissionRequestsRef.current = pendingPermissionRequests;
   }, [pendingPermissionRequests]);
 
+  /**
+   * Per-session streaming buffers for sessions that are NOT the active view.
+   *
+   * The legacy single `accumulatedStreamRef`/`streamTimerRef` pair is only
+   * ever filled by the active session's deltas. A non-active session's deltas
+   * used to be appended one-by-one via `appendRealtime` — each delta became its
+   * own standalone message row (own timestamp, own copy/MD control), i.e. the
+   * exact "fragmented" stream the Pi agent produced. Buffering per session and
+   * always emitting one `__streaming_<sid>` row fixes that, and makes
+   * `stream_end`/`complete` finalize non-active sessions too.
+   */
+  const backgroundStreamsRef = useRef(new Map<string, { text: string; timer: number | null; provider: LLMProvider }>());
+
+  /**
+   * Flush a background session's accumulated text into its streaming row and
+   * convert it to a regular `text` message. Safe to call twice (idempotent:
+   * no buffer left means no-op).
+   */
+  const flushBackgroundStream = useCallback((sid: string) => {
+    const entry = backgroundStreamsRef.current.get(sid);
+    if (!entry) return;
+    backgroundStreamsRef.current.delete(sid);
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+    }
+    if (entry.text) {
+      sessionStore.updateStreaming(sid, entry.text, entry.provider);
+      sessionStore.finalizeStreaming(sid);
+    }
+  }, [sessionStore]);
+
   useEffect(() => {
     const handleEvent = (msg: ServerEvent) => {
       if (!msg.kind) {
@@ -178,6 +209,26 @@ export function useChatRealtimeHandlers({
       if (msg.kind === 'stream_delta') {
         const text = (msg.content as string) || '';
         if (!text) return;
+
+        if (sid && sid !== activeViewSessionId) {
+          // Non-active session: accumulate into its own buffer so all deltas
+          // of one assistant reply end up in a single merged message instead
+          // of one standalone row per delta.
+          const entry = backgroundStreamsRef.current.get(sid)
+            ?? { text: '', timer: null, provider };
+          entry.text += text;
+          entry.provider = provider;
+          if (!entry.timer) {
+            entry.timer = window.setTimeout(() => {
+              if (entry.text) {
+                sessionStore.updateStreaming(sid, entry.text, entry.provider);
+              }
+            }, 100);
+          }
+          backgroundStreamsRef.current.set(sid, entry);
+          return;
+        }
+
         accumulatedStreamRef.current += text;
         if (!streamTimerRef.current) {
           streamTimerRef.current = window.setTimeout(() => {
@@ -186,10 +237,6 @@ export function useChatRealtimeHandlers({
               sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
             }
           }, 100);
-        }
-        // Also route to store for non-active sessions
-        if (sid && sid !== activeViewSessionId) {
-          sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
         }
         return;
       }
@@ -204,8 +251,9 @@ export function useChatRealtimeHandlers({
             sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
           }
           sessionStore.finalizeStreaming(sid);
+          accumulatedStreamRef.current = '';
+          flushBackgroundStream(sid);
         }
-        accumulatedStreamRef.current = '';
         return;
       }
 
@@ -233,6 +281,9 @@ export function useChatRealtimeHandlers({
             sessionStore.finalizeStreaming(sid);
           }
           accumulatedStreamRef.current = '';
+          if (sid) {
+            flushBackgroundStream(sid);
+          }
 
           // `complete` is the unified terminal event — every provider run ends
           // with exactly one, regardless of success, failure, or abort. The
@@ -351,5 +402,6 @@ export function useChatRealtimeHandlers({
     onSessionIdle,
     onWebSocketReconnect,
     sessionStore,
+    flushBackgroundStream,
   ]);
 }

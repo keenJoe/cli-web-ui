@@ -2,6 +2,8 @@ import { promises as fs, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { repairMojibakeName } from '../../shared/encoding.js';
+
 /**
  * Shared chat-attachment plumbing for every provider runtime.
  *
@@ -74,7 +76,7 @@ export function normalizeAttachmentDescriptors(attachments: unknown): ChatAttach
       }
       const descriptor: ChatAttachmentDescriptor = { path: entryPath };
       if (typeof record.name === 'string') {
-        descriptor.name = record.name;
+        descriptor.name = repairMojibakeName(record.name);
       }
       if (typeof record.mimeType === 'string') {
         descriptor.mimeType = record.mimeType;
