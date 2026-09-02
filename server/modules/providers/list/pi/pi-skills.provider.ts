@@ -21,7 +21,12 @@ import { PiRpcClient } from './pi-rpc-client.provider.js';
 /** Minimal RPC surface this provider depends on for skill discovery. */
 export interface PiSkillsRpcClient {
   start(): Promise<void>;
-  getCommands(): Promise<Array<{ name: string; description?: string; source: string }>>;
+  getCommands(): Promise<Array<{
+    name: string;
+    description?: string;
+    source: string;
+    sourceInfo?: { path?: string };
+  }>>;
   close(graceMs: number): Promise<void>;
 }
 
@@ -33,6 +38,9 @@ export interface PiSkillsDeps {
 /** Format a skill name as Pi's `/skill:<name>` invocation command. */
 const formatPiSkillCommand = (skillName: string): string => `/skill:${skillName}`;
 
+/** Extension commands are invoked as a plain `/name` slash command. */
+const formatPiExtensionCommand = (name: string): string => `/${name}`;
+
 export class PiSkillsProvider extends SkillsProvider {
   private readonly paths: Pick<PiPaths, 'getAgentDir'>;
   private readonly createRpcClient: () => PiSkillsRpcClient;
@@ -40,12 +48,19 @@ export class PiSkillsProvider extends SkillsProvider {
   constructor(deps: PiSkillsDeps = {}) {
     super('pi');
     this.paths = deps.paths ?? new PiPaths();
+    // SAFETY: PiRpcClient satisfies the PiSkillsRpcClient surface (start/
+    // getCommands/close); the narrow cast keeps the shared SDK type out of the
+    // provider's minimal dependency seam.
     this.createRpcClient = deps.createRpcClient ?? (() => new PiRpcClient() as unknown as PiSkillsRpcClient);
   }
 
   /**
-   * Lists Pi skills via RPC `get_commands`, keeping only `source === 'skill'`
-   * entries and presenting each with a `/skill:<name>` command.
+   * Lists Pi skills AND extension slash commands via RPC `get_commands`.
+   *
+   * `source === 'skill'` entries are presented as `/skill:<name>`; extension
+   * commands (`source === 'extension'`, registered via `pi.registerCommand()`)
+   * are surfaced with a plain `/name` invocation so they appear alongside
+   * skills in the composer's slash menu. Prompt-template commands are omitted.
    */
   async listSkills(_options?: ProviderSkillListOptions): Promise<ProviderSkill[]> {
     const client = this.createRpcClient();
@@ -53,15 +68,22 @@ export class PiSkillsProvider extends SkillsProvider {
     try {
       const commands = await client.getCommands();
       return commands
-        .filter((command) => command.source === 'skill')
-        .map((command) => ({
-          provider: this.provider,
-          name: command.name,
-          description: command.description ?? '',
-          command: formatPiSkillCommand(command.name),
-          scope: 'user' as const,
-          sourcePath: path.join(this.getSkillRoot(), command.name),
-        }));
+        .filter((command) => command.source === 'skill' || command.source === 'extension')
+        .map((command) => {
+          const isSkill = command.source === 'skill';
+          return {
+            provider: this.provider,
+            name: command.name,
+            description: command.description ?? '',
+            command: isSkill
+              ? formatPiSkillCommand(command.name)
+              : formatPiExtensionCommand(command.name),
+            scope: 'user' as const,
+            sourcePath: isSkill
+              ? path.join(this.getSkillRoot(), command.name)
+              : (command.sourceInfo?.path ?? ''),
+          };
+        });
     } finally {
       await client.close(0);
     }

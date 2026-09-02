@@ -161,3 +161,4 @@ paseo.json
 .pi-glla/
 .playwright-cli/
 output/
+.pi-lens.json

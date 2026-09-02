@@ -17,6 +17,7 @@ class FakeUnderlyingClient {
   // When set, request-style methods reject with this error (simulates the
   // official client rejecting pending requests on unexpected process exit).
   requestError: Error | null = null;
+  sentRaw: unknown[] = [];
   private listeners = new Set<Listener>();
   private closeListeners = new Set<() => void>();
 
@@ -64,6 +65,10 @@ class FakeUnderlyingClient {
     return Promise.resolve(this.commands);
   }
 
+  sendRaw(command: unknown): void {
+    this.sentRaw.push(command);
+  }
+
   onClose(listener: () => void): () => void {
     this.closeListeners.add(listener);
     return () => this.closeListeners.delete(listener);
@@ -100,6 +105,22 @@ test('start injects --no-extensions and merges caller options', async () => {
   assert.deepEqual(args, ['--no-extensions']);
   assert.equal(captured.options?.cwd, '/tmp/work');
   assert.equal((captured.options?.env as Record<string, string>).FOO, 'bar');
+});
+
+test('start omits --no-extensions when PI_ENABLE_EXTENSIONS=1', async () => {
+  const previous = process.env.PI_ENABLE_EXTENSIONS;
+  process.env.PI_ENABLE_EXTENSIONS = '1';
+  try {
+    const fake = new FakeUnderlyingClient();
+    const { client, captured } = makeClient(fake);
+
+    await client.start();
+
+    assert.deepEqual(captured.options?.args, []);
+  } finally {
+    if (previous === undefined) delete process.env.PI_ENABLE_EXTENSIONS;
+    else process.env.PI_ENABLE_EXTENSIONS = previous;
+  }
 });
 
 test('start blanks inherited Anthropic credentials so Pi lists only its own providers', async () => {
@@ -150,6 +171,16 @@ test('onEvent forwards events in dispatch order', async () => {
   fake.emit({ type: 'd' });
 
   assert.deepEqual(received, [{ type: 'a' }, { type: 'b' }, { type: 'c' }]);
+});
+
+test('sendRaw writes one JSON object to the underlying client', async () => {
+  const fake = new FakeUnderlyingClient();
+  const { client } = makeClient(fake);
+  await client.start();
+
+  client.sendRaw({ type: 'extension_ui_response', id: 'u-1', confirmed: true });
+
+  assert.deepEqual(fake.sentRaw, [{ type: 'extension_ui_response', id: 'u-1', confirmed: true }]);
 });
 
 test('getStderr passes through underlying stderr without polluting events', async () => {

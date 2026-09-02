@@ -12,7 +12,7 @@ after(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-type Command = { name: string; description?: string; source: string };
+type Command = { name: string; description?: string; source: string; sourceInfo?: { path?: string } };
 
 function stubClient(commands: Command[]): { create: () => PiSkillsRpcClient; started: () => boolean } {
   let started = false;
@@ -32,11 +32,12 @@ function stubClient(commands: Command[]): { create: () => PiSkillsRpcClient; sta
   };
 }
 
-// T24: get_commands filtered to source === 'skill', shown as /skill:<name>.
-test('T24 lists only skill commands with /skill:<name> format', async () => {
+// T24: get_commands keeps skills (/skill:<name>) and extension commands (/name),
+// drops prompt templates.
+test('T24 lists skills and extension commands with their invocation formats', async () => {
   const stub = stubClient([
     { name: 'review', description: 'Review code', source: 'skill' },
-    { name: 'compact', source: 'extension' },
+    { name: 'compact', source: 'extension', sourceInfo: { path: '/home/u/.pi/agent/extensions/session.ts' } },
     { name: 'write-tests', description: 'Write tests', source: 'skill' },
     { name: 'plan', source: 'prompt' },
   ]);
@@ -48,12 +49,13 @@ test('T24 lists only skill commands with /skill:<name> format', async () => {
 
   const skills = await provider.listSkills();
 
-  assert.equal(skills.length, 2);
+  assert.equal(skills.length, 3);
   assert.deepEqual(
-    skills.map((skill) => ({ name: skill.name, command: skill.command, provider: skill.provider })),
+    skills.map((skill) => ({ name: skill.name, command: skill.command, sourcePath: skill.sourcePath })),
     [
-      { name: 'review', command: '/skill:review', provider: 'pi' },
-      { name: 'write-tests', command: '/skill:write-tests', provider: 'pi' },
+      { name: 'review', command: '/skill:review', sourcePath: path.join(tmpRoot, 'agent', 'skills', 'review') },
+      { name: 'compact', command: '/compact', sourcePath: '/home/u/.pi/agent/extensions/session.ts' },
+      { name: 'write-tests', command: '/skill:write-tests', sourcePath: path.join(tmpRoot, 'agent', 'skills', 'write-tests') },
     ],
   );
   assert.ok(stub.started());

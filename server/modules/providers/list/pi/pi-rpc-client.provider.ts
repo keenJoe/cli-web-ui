@@ -58,6 +58,15 @@ export interface UnderlyingRpcClient {
   getState(): Promise<RpcSessionState>;
   getAvailableModels(): Promise<ModelInfo[]>;
   getCommands(): Promise<RpcSlashCommand[]>;
+  /**
+   * Write one raw JSON object to the child's stdin as a strict JSONL line.
+   *
+   * The official client's `send()` is request/response correlated and would
+   * spuriously wait for a `response` frame; extension UI responses are
+   * fire-and-forget from the protocol's perspective, so the runtime uses this
+   * bypass to write `extension_ui_response` directly.
+   */
+  sendRaw(command: unknown): void;
 }
 
 export interface PiRpcClientDeps {
@@ -66,6 +75,19 @@ export interface PiRpcClientDeps {
 
 // RpcClient itself always adds `--mode rpc`; only wrapper-owned flags belong here.
 const FIXED_ADDITIONAL_ARGS = ['--no-extensions'];
+
+/**
+ * Whether pi extensions are enabled for this deployment.
+ *
+ * Extensions run arbitrary code with full system access and their `ctx.ui`
+ * dialog methods block the RPC turn until the client responds. They are opt-in
+ * behind `PI_ENABLE_EXTENSIONS=1`; the default keeps `--no-extensions` so an
+ * unattended interactive extension can never hang a run.
+ */
+const extensionsEnabled = () => process.env.PI_ENABLE_EXTENSIONS === '1';
+
+const buildFixedAdditionalArgs = (): string[] =>
+  extensionsEnabled() ? [] : [...FIXED_ADDITIONAL_ARGS];
 
 /**
  * Anthropic credentials Pi picks up from the environment.
@@ -100,6 +122,8 @@ const defaultDeps: PiRpcClientDeps = {
         // process death before agent_settled surfaces as a failure.
         // `process` is a runtime-public field; the shipped .d.ts marks it
         // private, so reach it through a narrow typed view.
+        // SAFETY: `process` is assigned by the official client's start() and
+        // holds the spawned ChildProcess; the .d.ts hides the handle only.
         const child = (client as unknown as { process: ChildProcess | null }).process;
         if (!child) return () => {};
         const onExit = (): void => listener();
@@ -114,6 +138,17 @@ const defaultDeps: PiRpcClientDeps = {
       getState: () => client.getState(),
       getAvailableModels: () => client.getAvailableModels(),
       getCommands: () => client.getCommands(),
+      sendRaw: (command) => {
+        // SAFETY: same invariant as onClose — `process` is the spawned child
+        // assigned in start(); the .d.ts hides it, it is not nullable at runtime.
+        const child = (client as unknown as { process: ChildProcess | null }).process;
+        const stdin = child?.stdin;
+        if (!child || !stdin || stdin.destroyed || !stdin.writable) {
+          throw new Error('Pi RPC process stdin is not writable');
+        }
+        // Strict JSONL, LF-only (matches the agent's framing; no readline).
+        stdin.write(`${JSON.stringify(command)}\n`);
+      },
     };
   },
 };
@@ -136,7 +171,7 @@ export class PiRpcClient {
       // JS entry (dist/cli.js), never the bare `pi` command. Default to the
       // resolved package entry unless a caller explicitly overrides it.
       cliPath: cliPath ?? new PiPaths().getRpcCliEntry(),
-      args: [...FIXED_ADDITIONAL_ARGS, ...(args ?? [])],
+      args: [...buildFixedAdditionalArgs(), ...(args ?? [])],
       env: buildChildEnv(env),
     });
     this.client = client;
@@ -174,6 +209,17 @@ export class PiRpcClient {
 
   getCommands(): Promise<RpcSlashCommand[]> {
     return this.requireClient().getCommands();
+  }
+
+  /**
+   * Writes one raw JSON object to the child's stdin as a strict JSONL line.
+   *
+   * Backs the runtime's extension-UI responder: the official `send()` is
+   * request/response correlated and would spuriously wait for a `response`
+   * frame, so `extension_ui_response` frames bypass it.
+   */
+  sendRaw(command: unknown): void {
+    this.requireClient().sendRaw(command);
   }
 
   /**

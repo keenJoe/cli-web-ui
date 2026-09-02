@@ -23,6 +23,7 @@ import type {
   IProviderRuntime,
 } from '@/shared/interfaces.js';
 import type {
+  ProviderPermissionDecision,
   ProviderRunEvent,
   ProviderRunOutcome,
   ProviderRunRequest,
@@ -86,6 +87,13 @@ export interface PiRuntimeRpc {
    * runtime uses it to detect a close before `agent_settled` (ERR-PI-RUN-FAILED).
    */
   onClose?(listener: () => void): () => void;
+  /**
+   * Write one raw JSON object to the child's stdin as a strict JSONL line.
+   *
+   * Backs the extension-UI responder: the official client's `send()` is
+   * request/response correlated and cannot send `extension_ui_response`.
+   */
+  sendRaw(command: unknown): void;
 }
 
 /** Factory seam so tests inject a stub RPC client instead of spawning `pi`. */
@@ -273,6 +281,54 @@ export function isSettledEvent(event: unknown): boolean {
   return isRecord(event) && event.type === 'agent_settled';
 }
 
+// ---------------------------------------------------------------------------
+// Extension UI dialog protocol
+// ---------------------------------------------------------------------------
+
+/** Tool name emitted in `permission_request` events for extension UI dialogs. */
+const PI_EXTENSION_UI_TOOL = 'pi-extension-ui';
+
+/** Extension UI methods that block until the client responds. */
+const EXTENSION_UI_DIALOG_METHODS = new Set(['select', 'confirm', 'input', 'editor']);
+
+/**
+ * Returns the dialog method when `event` is a blocking `extension_ui_request`
+ * (one of `select` / `confirm` / `input` / `editor`), or `null` for fire-
+ * and-forget methods (`notify` / `setStatus` / …) and non-extension events.
+ */
+export function readExtensionUiDialogMethod(
+  event: unknown,
+): 'select' | 'confirm' | 'input' | 'editor' | null {
+  if (!isRecord(event) || event.type !== 'extension_ui_request') return null;
+  const method = typeof event.method === 'string' ? event.method : '';
+  return (EXTENSION_UI_DIALOG_METHODS.has(method) ? method : null) as never;
+}
+
+/**
+ * Translates one `chat.permission-response` decision back into the partial
+ * `extension_ui_response` payload (without the `type` / `id` envelope).
+ *
+ * - `confirm`   → `{ confirmed: boolean }`
+ * - `select`    → `{ value: string }` or `{ cancelled: true }`
+ * - `input`     → `{ value: string }` or `{ cancelled: true }`
+ * - `editor`    → `{ value: string }` or `{ cancelled: true }`
+ */
+export function buildExtensionUiResponse(
+  method: 'select' | 'confirm' | 'input' | 'editor',
+  decision: ProviderPermissionDecision,
+): Record<string, unknown> {
+  if (method === 'confirm') {
+    return { confirmed: Boolean(decision.allow) };
+  }
+  if (decision.allow === false) {
+    return { cancelled: true };
+  }
+  const value = typeof decision.updatedInput === 'string'
+    ? decision.updatedInput
+    : (typeof decision.message === 'string' ? decision.message : '');
+  return { value };
+}
+
 function buildRpcClientOptions(
   request: ProviderRunRequest,
   nativeSessionId: string | null,
@@ -312,6 +368,24 @@ export interface PiRuntimeDeps {
 }
 
 /**
+ * One blocked extension-UI dialog awaiting a `chat.permission-response`.
+ *
+ * Lives at the runtime (not run) scope so `permissions.resolve` can answer it
+ * after the originating `run` promise has handed control back to the
+ * websocket handler; `respond` closes over that run's RPC child stdin.
+ */
+type PendingExtensionDialog = {
+  requestId: string;
+  method: 'select' | 'confirm' | 'input' | 'editor';
+  runId: string;
+  sessionId: string;
+  toolName: string;
+  input: unknown;
+  receivedAt: Date;
+  respond: (response: Record<string, unknown>) => void;
+};
+
+/**
  * Builds the Pi runtime. `deps` supplies the RPC-client factory (a stub in
  * tests) and the abort grace window.
  */
@@ -319,6 +393,43 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}): IProviderRuntime {
   const createRpcClient = deps.createRpcClient ?? defaultCreatePiRuntimeRpc;
   const abortGraceMs = deps.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS;
   const thinkingFlushMs = Math.max(0, deps.thinkingFlushMs ?? DEFAULT_THINKING_FLUSH_MS);
+
+  // Shared across runs: extension UI dialogs block their turn and are resolved
+  // out-of-band via `permissions.resolve`, which the websocket layer reaches
+  // through the provider registry rather than through one run's promise.
+  const pendingDialogs = new Map<string, PendingExtensionDialog>();
+
+  const resolveExtensionUiDialog = (
+    requestId: string,
+    decision: ProviderPermissionDecision,
+  ): void => {
+    const pending = pendingDialogs.get(requestId);
+    if (!pending) return;
+    pendingDialogs.delete(requestId);
+
+    const partial = buildExtensionUiResponse(pending.method, decision);
+    try {
+      pending.respond(partial);
+    } catch (error) {
+      console.warn('[Pi] failed to respond to extension UI dialog', error);
+    }
+  };
+
+  const listPendingExtensionUiDialogs = (sessionId: string): unknown[] => {
+    const pending: unknown[] = [];
+    for (const dialog of pendingDialogs.values()) {
+      if (dialog.sessionId === sessionId) {
+        pending.push({
+          requestId: dialog.requestId,
+          toolName: dialog.toolName,
+          input: dialog.input,
+          sessionId: dialog.sessionId,
+          receivedAt: dialog.receivedAt,
+        });
+      }
+    }
+    return pending;
+  };
 
   async function run(
     request: ProviderRunRequest,
@@ -444,6 +555,23 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}): IProviderRuntime {
       ): void => {
         if (settled) return;
         settled = true;
+        // Any dialogs this run was still blocked on are now unreachable — the
+        // child is closing. Cancel them so `permission_cancelled` clears the UI
+        // and `listPending` never reports a dead dialog on reconnect.
+        for (const [requestId, dialog] of pendingDialogs.entries()) {
+          if (dialog.runId === request.runId) {
+            pendingDialogs.delete(requestId);
+            sink.emit(
+              createNormalizedMessage({
+                kind: 'permission_cancelled',
+                provider: 'pi',
+                sessionId: request.appSessionId,
+                requestId,
+                reason: 'run_finished',
+              }) as ProviderRunEvent,
+            );
+          }
+        }
         finalizeAllThinkingBlocks();
         state = 'SETTLED';
         if (abortTimer) clearTimeout(abortTimer);
@@ -491,6 +619,46 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}): IProviderRuntime {
       }
       signal.addEventListener('abort', beginAbort, { once: true });
 
+      const beginExtensionUiDialog = (
+        method: 'select' | 'confirm' | 'input' | 'editor',
+        rawEvent: Record<string, unknown>,
+      ): void => {
+        const requestId = typeof rawEvent.id === 'string' ? rawEvent.id : '';
+        if (!requestId) {
+          finish({
+            status: 'failed',
+            providerSessionId: boundSessionId,
+            exitCode: 1,
+            errorCode: 'ERR-PI-RPC-PROTOCOL',
+          });
+          return;
+        }
+
+        pendingDialogs.set(requestId, {
+          requestId,
+          method,
+          runId: request.runId,
+          sessionId: request.appSessionId,
+          toolName: PI_EXTENSION_UI_TOOL,
+          input: rawEvent,
+          receivedAt: new Date(),
+          respond: (partial) => {
+            rpc.sendRaw({ type: 'extension_ui_response', id: requestId, ...partial });
+          },
+        });
+
+        sink.emit(
+          createNormalizedMessage({
+            kind: 'permission_request',
+            provider: 'pi',
+            sessionId: request.appSessionId,
+            requestId,
+            toolName: PI_EXTENSION_UI_TOOL,
+            input: rawEvent,
+          }) as ProviderRunEvent,
+        );
+      };
+
       const handleEvent = (event: unknown): void => {
         // Once a terminal outcome is reached (settled/aborted/failed) any late
         // native event is ignored, so a single run yields exactly one terminal.
@@ -516,6 +684,15 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}): IProviderRuntime {
         }
 
         if (aborting) {
+          return;
+        }
+
+        // Blocking extension UI dialogs never reach `mapPiEvent` (they are not
+        // streamed content). Relay them as a permission request and park the
+        // resolver until the frontend answers over `chat.permission-response`.
+        const dialogMethod = readExtensionUiDialogMethod(event);
+        if (dialogMethod !== null) {
+          beginExtensionUiDialog(dialogMethod, event as Record<string, unknown>);
           return;
         }
 
@@ -651,7 +828,13 @@ export function createPiRuntime(deps: PiRuntimeDeps = {}): IProviderRuntime {
     });
   }
 
-  return { run };
+  return {
+    run,
+    permissions: {
+      resolve: resolveExtensionUiDialog,
+      listPending: listPendingExtensionUiDialogs,
+    },
+  };
 }
 
 /** Default runtime instance used by the provider registry. */

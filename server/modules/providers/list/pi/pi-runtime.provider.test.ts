@@ -16,6 +16,8 @@ import {
   createPiRuntime,
   mapPiEvent,
   isSettledEvent,
+  readExtensionUiDialogMethod,
+  buildExtensionUiResponse,
   type PiRuntimeRpc,
 } from './pi-runtime.provider.js';
 import { PiRpcClient } from './pi-rpc-client.provider.js';
@@ -36,6 +38,7 @@ class FakeRpc implements PiRuntimeRpc {
   };
   startError: Error | null = null;
   startGate: Promise<void> | null = null;
+  sentRaw: unknown[] = [];
 
   private eventListeners = new Set<(e: unknown) => void>();
   private closeListeners = new Set<() => void>();
@@ -70,6 +73,10 @@ class FakeRpc implements PiRuntimeRpc {
 
   async close(graceMs: number): Promise<void> {
     this.closeCalls.push(graceMs);
+  }
+
+  sendRaw(command: unknown): void {
+    this.sentRaw.push(command);
   }
 
   getStderr(): string {
@@ -885,10 +892,82 @@ test('T28: default RPC client spawns with --no-extensions', () => {
           getState: async () => ({}) as never,
           getAvailableModels: async () => [],
           getCommands: async () => [],
+          sendRaw: () => {},
         };
       },
     },
   );
   void client.start();
   assert.ok(captured.includes('--no-extensions'), 'runtime spawn flags include --no-extensions');
+});
+
+// ---------------------------------------------------------------------------
+// Extension UI dialog protocol
+// ---------------------------------------------------------------------------
+
+test('readExtensionUiDialogMethod detects only blocking dialog methods', () => {
+  assert.equal(readExtensionUiDialogMethod({ type: 'extension_ui_request', id: 'u-1', method: 'confirm' }), 'confirm');
+  assert.equal(readExtensionUiDialogMethod({ type: 'extension_ui_request', id: 'u-2', method: 'select' }), 'select');
+  assert.equal(readExtensionUiDialogMethod({ type: 'extension_ui_request', id: 'u-3', method: 'input' }), 'input');
+  assert.equal(readExtensionUiDialogMethod({ type: 'extension_ui_request', id: 'u-4', method: 'editor' }), 'editor');
+  assert.equal(readExtensionUiDialogMethod({ type: 'extension_ui_request', id: 'u-5', method: 'notify' }), null);
+  assert.equal(readExtensionUiDialogMethod({ type: 'message_update' }), null);
+  assert.equal(readExtensionUiDialogMethod(null), null);
+});
+
+test('buildExtensionUiResponse maps confirm decisions to confirmed booleans', () => {
+  assert.deepEqual(buildExtensionUiResponse('confirm', { allow: true }), { confirmed: true });
+  assert.deepEqual(buildExtensionUiResponse('confirm', { allow: false }), { confirmed: false });
+});
+
+test('buildExtensionUiResponse maps value methods and cancellations', () => {
+  assert.deepEqual(buildExtensionUiResponse('input', { allow: true, updatedInput: 'hello' }), { value: 'hello' });
+  assert.deepEqual(buildExtensionUiResponse('editor', { allow: true, message: 'text' }), { value: 'text' });
+  assert.deepEqual(buildExtensionUiResponse('select', { allow: false }), { cancelled: true });
+});
+
+test('an extension UI dialog emits permission_request and resolves via permissions gateway', async () => {
+  const fake = new FakeRpc();
+  const runtime = createPiRuntime({ createRpcClient: () => fake });
+  const { writer, sent } = makeWriter();
+
+  const runPromise = runPi(runtime, 'hi', { sessionId: 'app-1' }, writer, makeContext());
+  await tick();
+
+  fake.emit({ type: 'extension_ui_request', id: 'dialog-1', method: 'confirm', title: 'Allow rm?', message: 'rm -rf /' });
+
+  const requests = sent.filter((m) => m.kind === 'permission_request');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].requestId, 'dialog-1');
+  assert.equal(requests[0].toolName, 'pi-extension-ui');
+
+  runtime.permissions?.resolve('dialog-1', { allow: true });
+  assert.deepEqual(fake.sentRaw, [
+    { type: 'extension_ui_response', id: 'dialog-1', confirmed: true },
+  ]);
+
+  fake.emit({ type: 'extension_ui_request', id: 'dialog-2', method: 'select', title: 'Pick', options: ['a', 'b'] });
+  assert.equal(runtime.permissions?.listPending('app-1').length, 1);
+  assert.equal(runtime.permissions?.listPending('other-session').length, 0);
+
+  fake.emit({ type: 'agent_settled' });
+  assert.equal((await runPromise).status, 'completed');
+});
+
+test('a run finishing cancels its outstanding extension UI dialogs', async () => {
+  const fake = new FakeRpc();
+  const runtime = createPiRuntime({ createRpcClient: () => fake });
+  const { writer, sent } = makeWriter();
+
+  const runPromise = runPi(runtime, 'hi', { sessionId: 'app-1' }, writer, makeContext());
+  await tick();
+
+  fake.emit({ type: 'extension_ui_request', id: 'dialog-1', method: 'input', title: 'Name?' });
+  fake.emit({ type: 'agent_settled' });
+  await runPromise;
+
+  const cancelled = sent.filter((m) => m.kind === 'permission_cancelled');
+  assert.equal(cancelled.length, 1);
+  assert.equal(cancelled[0].requestId, 'dialog-1');
+  assert.equal(runtime.permissions?.listPending('app-1').length, 0);
 });

@@ -44,6 +44,8 @@ const piModelsRpc: PiModelsRpc = {
     const client = new PiRpcClient();
     await client.start();
     try {
+      // SAFETY: PiRpcClient satisfies the PiModelsProbe surface (getAvailableModels);
+      // the cast keeps the shared SDK type out of the probe's narrow seam.
       return await fn(client as unknown as PiModelsProbe);
     } finally {
       try {
@@ -63,7 +65,7 @@ export class PiProvider extends AbstractProvider {
     supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,
-    supportsPermissionRequests: false,
+    supportsPermissionRequests: true,
     supportsEffort: true,
   };
   readonly runtime: IProviderRuntime = piRuntime;

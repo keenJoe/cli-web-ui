@@ -99,6 +99,7 @@ test('T28 probe uses same flags as runtime including --no-extensions', async () 
             getState: async () => ({}) as never,
             getAvailableModels: async () => [MODEL],
             getCommands: async () => [],
+            sendRaw: () => {},
           };
         },
       }),

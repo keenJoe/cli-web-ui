@@ -52,6 +52,7 @@ class StubPiRpc implements PiRuntimeRpc {
 
   abortCalls = 0;
   closeCalls: number[] = [];
+  sentRaw: unknown[] = [];
 
   async start(): Promise<void> {}
 
@@ -77,6 +78,10 @@ class StubPiRpc implements PiRuntimeRpc {
 
   async close(graceMs: number): Promise<void> {
     this.closeCalls.push(graceMs);
+  }
+
+  sendRaw(command: unknown): void {
+    this.sentRaw.push(command);
   }
 
   getStderr(): string {

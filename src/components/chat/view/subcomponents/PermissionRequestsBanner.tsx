@@ -5,7 +5,7 @@ import type { PendingPermissionRequest } from '../../types/types';
 import { buildClaudeToolPermissionEntry, formatToolInputForDisplay } from '../../utils/chatPermissions';
 import { getClaudeSettings } from '../../utils/chatStorage';
 import { getPermissionPanel, registerPermissionPanel } from '../../tools/configs/permissionPanelRegistry';
-import { AskUserQuestionPanel } from '../../tools/components/InteractiveRenderers';
+import { AskUserQuestionPanel, PiExtensionUiPanel } from '../../tools/components/InteractiveRenderers';
 import {
   Confirmation,
   ConfirmationTitle,
@@ -15,6 +15,7 @@ import {
 } from '../../../../shared/view/ui';
 
 registerPermissionPanel('AskUserQuestion', AskUserQuestionPanel);
+registerPermissionPanel('pi-extension-ui', PiExtensionUiPanel);
 
 interface PermissionRequestsBannerProps {
   pendingPermissionRequests: PendingPermissionRequest[];
