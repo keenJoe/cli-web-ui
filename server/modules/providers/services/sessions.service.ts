@@ -187,6 +187,29 @@ export const sessionsService = {
   },
 
   /**
+   * Resolves the provider-native id only for an explicit user copy action.
+   * Normal session payloads continue to expose only the stable app id.
+   */
+  getProviderSessionId(sessionId: string): string {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    if (!session.provider_session_id) {
+      throw new AppError('This session ID is not available yet.', {
+        code: 'PROVIDER_SESSION_ID_NOT_AVAILABLE',
+        statusCode: 409,
+      });
+    }
+
+    return session.provider_session_id;
+  },
+
+  /**
    * Ensures a caller-supplied app session id has a persistence row before a run.
    *
    * ProviderRunCoordinator uses this for transports such as Agent HTTP that
