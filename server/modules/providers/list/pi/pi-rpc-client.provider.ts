@@ -17,7 +17,7 @@ import type { ChildProcess } from 'node:child_process';
 import {
   RpcClient,
   type RpcClientOptions,
-  type AgentSessionEvent,
+  type JsonAgentSessionEvent,
   type ModelInfo,
   type RpcSessionState,
 } from '@earendil-works/pi-coding-agent';
@@ -36,7 +36,7 @@ type RpcSlashCommand = {
   sourceInfo?: unknown;
 };
 
-type EventListener = (event: AgentSessionEvent) => void;
+type EventListener = (event: JsonAgentSessionEvent) => void;
 
 /**
  * Minimal surface the wrapper depends on. The default adapter is backed by the
