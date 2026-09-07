@@ -296,8 +296,15 @@ export function useChatRealtimeHandlers({
           }
 
           if (msg.aborted) {
-            // Abort was requested — the complete event confirms it. No
-            // further UI action is needed beyond clearing the entry above.
+            // Abort was requested — the complete event confirms it. The
+            // vision-bridge extension's own `cancelled` status is only
+            // best-effort and may not arrive after an abort, so the store
+            // authoritatively synthesizes one idempotent `cancelled` terminal
+            // for every started-but-not-terminal observation in this run
+            // (design.md D11; task 7.2).
+            if (sid) {
+              sessionStore.synthesizeVisionBridgeCancellation(sid);
+            }
             break;
           }
 

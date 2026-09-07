@@ -18,6 +18,8 @@ import ProviderSelectionEmptyState from './ProviderSelectionEmptyState';
 import ToolGroupContainer from './ToolGroupContainer';
 import LoadAllMessagesOverlay from './LoadAllMessagesOverlay';
 import ChatExportMenu from './ChatExportMenu';
+import VisionBridgeCard from './VisionBridgeCard';
+import type { VisionBridgeCard as VisionBridgeCardData } from '../../../../stores/visionBridgeState';
 
 interface ChatMessagesPaneProps {
   scrollContainerRef: RefObject<HTMLDivElement>;
@@ -62,6 +64,13 @@ interface ChatMessagesPaneProps {
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject: Project;
+  /**
+   * Structured vision-bridge observation cards for the viewed session. Cards
+   * anchored to a user message or tool result are attached to the matching
+   * message; unbound cards (no unique anchor) render once at the session
+   * level (design.md D4; task 7.4).
+   */
+  visionBridgeCards?: VisionBridgeCardData[];
 }
 
 function ChatMessagesPane({
@@ -105,6 +114,7 @@ function ChatMessagesPane({
   showRawParameters,
   showThinking,
   selectedProject,
+  visionBridgeCards = [],
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
   const groupedVisibleMessages = useMemo(
@@ -145,6 +155,14 @@ function ChatMessagesPane({
     (message: ChatMessage) =>
       messageKeyMap.get(message) ?? getIntrinsicMessageKey(message) ?? 'message-generated',
     [messageKeyMap],
+  );
+
+  // Unbound vision-bridge cards (history results without a unique anchor) are
+  // rendered once at the session level rather than next to an arbitrary
+  // message (design.md D4/D7; task 7.4 — never guess the nearest message).
+  const unboundVisionBridgeCards = useMemo(
+    () => visionBridgeCards.filter((card) => card.anchor.kind === 'unbound'),
+    [visionBridgeCards],
   );
 
   return (
@@ -237,6 +255,14 @@ function ChatMessagesPane({
             </div>
           )}
 
+          {unboundVisionBridgeCards.length > 0 && (
+            <div className="space-y-2">
+              {unboundVisionBridgeCards.map((card, index) => (
+                <VisionBridgeCard key={`vb-unbound-${index}`} card={card} />
+              ))}
+            </div>
+          )}
+
           {(() => {
             let prevMessage: ChatMessage | null = null;
 
@@ -259,6 +285,7 @@ function ChatMessagesPane({
                     showThinking={showThinking}
                     selectedProject={selectedProject}
                     provider={provider}
+                    visionBridgeCards={visionBridgeCards}
                   />
                 );
               }
@@ -279,6 +306,7 @@ function ChatMessagesPane({
                   showThinking={showThinking}
                   selectedProject={selectedProject}
                   provider={provider}
+                  visionBridgeCards={visionBridgeCards}
                 />
               );
             });

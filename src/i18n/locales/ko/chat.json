@@ -236,5 +236,18 @@
   },
   "tasks": {
     "nextTaskPrompt": "다음 작업 시작"
+  },
+  "visionBridge": {
+    "title": "비전 브리지",
+    "unboundSource": "바인딩되지 않은 소스",
+    "cached": "캐시됨",
+    "image": "이미지 #{{index}}",
+    "status": {
+      "processing": "처리 중",
+      "succeeded": "설명됨",
+      "failed": "실패",
+      "skipped": "건너뜀",
+      "cancelled": "취소됨"
+    }
   }
 }

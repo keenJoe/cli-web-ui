@@ -177,6 +177,7 @@ export function createProviderRuntimeService(
       effort: readOptionalString(options.effort),
       permissionMode: readOptionalString(options.permissionMode),
       sessionSummary: readOptionalString(options.sessionSummary),
+      clientMessageId: readOptionalString(options.clientMessageId),
       images: projectAttachments(options.images),
       files: projectAttachments(options.files),
       attachments: projectAttachments(options.attachments),

@@ -191,6 +191,7 @@ test('projects compatibility calls through the coordinator and aborts by app ses
     effort: undefined,
     permissionMode: 'default',
     sessionSummary: undefined,
+    clientMessageId: undefined,
     images: undefined,
     files: undefined,
     attachments: undefined,

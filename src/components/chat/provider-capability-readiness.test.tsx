@@ -2274,6 +2274,8 @@ test('token usage stays fail closed when the selected provider does not support 
   const sessionStore = {
     setActiveSession: noop,
     getMessages: () => [],
+    getVisionBridgeCards: () => [],
+    synthesizeVisionBridgeCancellation: noop,
     appendRealtime: noop,
     clearRealtime: noop,
     has: () => false,
@@ -2388,6 +2390,8 @@ test('a token usage request started before capability shutdown cannot restore st
   const sessionStore = {
     setActiveSession: noop,
     getMessages: () => [],
+    getVisionBridgeCards: () => [],
+    synthesizeVisionBridgeCancellation: noop,
     appendRealtime: noop,
     clearRealtime: noop,
     has: () => false,
@@ -2443,6 +2447,8 @@ test('clearing the selected session cancels loading before an old session fetch 
   const sessionStore = {
     setActiveSession: noop,
     getMessages: () => [],
+    getVisionBridgeCards: () => [],
+    synthesizeVisionBridgeCancellation: noop,
     appendRealtime: noop,
     clearRealtime: noop,
     has: () => false,

@@ -215,5 +215,18 @@
   },
   "tasks": {
     "nextTaskPrompt": "Начать следующую задачу"
+  },
+  "visionBridge": {
+    "title": "Визионный мост",
+    "unboundSource": "Несвязанный источник",
+    "cached": "кэш",
+    "image": "Изображение #{{index}}",
+    "status": {
+      "processing": "Обработка",
+      "succeeded": "Описано",
+      "failed": "Ошибка",
+      "skipped": "Пропущено",
+      "cancelled": "Отменено"
+    }
   }
 }

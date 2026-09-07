@@ -250,5 +250,18 @@
   },
   "tasks": {
     "nextTaskPrompt": "Start the next task"
+  },
+  "visionBridge": {
+    "title": "Vision bridge",
+    "unboundSource": "Unbound source",
+    "cached": "cached",
+    "image": "Image #{{index}}",
+    "status": {
+      "processing": "Processing",
+      "succeeded": "Described",
+      "failed": "Failed",
+      "skipped": "Skipped",
+      "cancelled": "Cancelled"
+    }
   }
 }

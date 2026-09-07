@@ -156,3 +156,7 @@ paseo.json
 .playwright-cli/
 output/
 .pi-lens.json
+
+# Script probe/e2e runtime output
+scripts/probe-output/
+scripts/e2e/e2e-output/

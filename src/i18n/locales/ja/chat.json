@@ -202,5 +202,18 @@
     "providers": {
       "assistant": "Assistant"
     }
+  },
+  "visionBridge": {
+    "title": "ビジョンブリッジ",
+    "unboundSource": "未バインドのソース",
+    "cached": "キャッシュ",
+    "image": "画像 #{{index}}",
+    "status": {
+      "processing": "処理中",
+      "succeeded": "記述済み",
+      "failed": "失敗",
+      "skipped": "スキップ",
+      "cancelled": "キャンセル"
+    }
   }
 }

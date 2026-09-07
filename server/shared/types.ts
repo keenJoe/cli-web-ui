@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Readable } from 'node:stream';
 
 import type { ChatAttachmentDescriptor } from '@/shared/image-attachments.js';
+import type { VisionBridgeModelOptionV1 } from '../../shared/vision-bridge.js';
 
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
@@ -166,6 +167,8 @@ export type ProviderSessionModel = {
  * Message/event variants emitted by provider adapters and normalized transports.
  *
  * Keep this union in sync with event kinds produced by provider session adapters.
+ * `'vision_bridge'` carries a structured, server-validated vision-bridge
+ * observation card; it never reuses the plain `text` marker for derived data.
  */
 export type MessageKind =
   | 'text'
@@ -181,7 +184,8 @@ export type MessageKind =
   | 'permission_cancelled'
   | 'session_created'
   | 'interactive_prompt'
-  | 'task_notification';
+  | 'task_notification'
+  | 'vision_bridge';
 
 /**
  * Event kinds added by the chat gateway layer on top of provider message kinds.
@@ -367,6 +371,14 @@ export type ProviderRunRequest = {
   readonly runId: string;
   readonly provider: LLMProvider;
   readonly appSessionId: string;
+  /**
+   * Stable identity of the optimistic user message that triggered this run.
+   *
+   * The server validates (or generates) it and never lets a client control the
+   * run/provider session identity. When a client omits it, only run-local
+   * correlation is available and exact realtime bubble binding is best-effort.
+   */
+  readonly clientMessageId?: string;
   readonly providerSessionId: string | null;
   readonly command: string;
   readonly cwd?: string;
@@ -603,7 +615,8 @@ export type NotificationEvent = {
  * the stable machine-readable error category.
  */
 export type AppErrorOptions = {
-  code?: string;
+  /** Stable machine-readable error code; numeric for vision-bridge, string elsewhere. */
+  code?: string | number;
   statusCode?: number;
   details?: unknown;
 };
@@ -1384,4 +1397,57 @@ export type CliApplication = {
  */
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
+};
+
+// ---------------------------
+//----------------- VISION BRIDGE BACKEND PORTS ------------
+/**
+ * Structured, non-secret result of resolving whether the vision bridge should
+ * load for one live Pi run.
+ *
+ * Produced by the vision-bridge config service and consumed by the Pi live
+ * runtime through the Pi-owned launch-policy port. `enabled:false` is the safe
+ * default for a missing/corrupt user id or config, never an exception raised
+ * during an ordinary turn. `configPath` is only non-null when `enabled` is
+ * true, and `diagnostics` carries sanitized reasons for a disabled policy.
+ */
+export type VisionBridgeLaunchPolicy = {
+  /** Whether the bridge extension should be loaded for this run. */
+  enabled: boolean;
+  /** Absolute path to the user's config.json, or null when disabled. */
+  configPath: string | null;
+  /** Absolute path to the master key decrypting a stored apiKey, or null when disabled. */
+  keyPath: string | null;
+  /** Sanitized, non-secret reasons the policy resolved as it did. */
+  diagnostics: string[];
+};
+
+/**
+ * Desensitized result of the Pi vision-model catalog probe.
+ *
+ * `available:false` means the clean probe could not return a verifiable full
+ * model snapshot (for example an older Pi CLI that only exposes the narrowed
+ * `ModelInfo` shape); callers must surface `vision_bridge.models_unavailable`
+ * rather than guessing capabilities. `models` is only populated when
+ * `available` is true and never carries endpoints, headers, or secrets.
+ */
+export type VisionBridgeModelCatalogResult = {
+  /** Whether a verifiable full model snapshot could be read. */
+  available: boolean;
+  /** Image-capable models, each reduced to a credential-free option. */
+  models: VisionBridgeModelOptionV1[];
+};
+
+/**
+ * Read-only model-catalog port the vision-bridge config service consumes.
+ *
+ * The Pi-owned `PiVisionModelCatalogProvider` implements it; the config
+ * service is injected with it at assembly so `server/modules/vision-bridge`
+ * never deep-imports Pi internals. `listVisionModels()` must never throw for a
+ * probe failure — it returns `{ available:false }` instead, which the service
+ * maps to `ERR-VB-MODELS-UNAVAILABLE`.
+ */
+export type VisionBridgeModelCatalogPort = {
+  /** Reads the image-capable model options, or reports the catalog unavailable. */
+  listVisionModels(): Promise<VisionBridgeModelCatalogResult>;
 };

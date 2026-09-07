@@ -93,7 +93,8 @@
     "tasks": "タスク",
     "notifications": "通知",
     "plugins": "プラグイン",
-    "about": "概要"
+    "about": "概要",
+    "visionBridge": "ビジョンブリッジ"
   },
   "notifications": {
     "title": "通知",
@@ -480,5 +481,79 @@
     "installAriaLabel": "プラグインのgitリポジトリURL",
     "tab": "タブ",
     "runningStatus": "実行中"
+  },
+  "visionBridge": {
+    "title": "ビジョンブリッジ",
+    "description": "画像を入力できないモデル向けに、画像をテキスト記述に変換します。画像は選択したビジョンモデルプロバイダーに送信されます。",
+    "loading": "ビジョンブリッジ設定を読み込み中…",
+    "noApiKeyNote": "ビジョン用の認証情報は Pi のプロバイダー設定から解決されます。ここに API キーやベース URL は保存しません。",
+    "enable": {
+      "label": "ビジョンブリッジを有効化",
+      "description": "有効にすると、メッセージ内の画像は現在のモデルに渡る前にビジョンモデルによって記述されます。"
+    },
+    "confirm": {
+      "title": "ビジョンブリッジを有効化",
+      "body": "ビジョンブリッジを有効化すると、メッセージ内の画像が選択したビジョンモデルプロバイダーに送信されます。続行前に外送ポリシーを確認してください。",
+      "provider": "プロバイダー",
+      "model": "モデル",
+      "toolImagesOff": "ツール画像は送信されません",
+      "toolImagesOn": "ツール画像が送信されます",
+      "continue": "有効化",
+      "cancel": "キャンセル"
+    },
+    "model": {
+      "label": "ビジョンモデル",
+      "noneAvailable": "画像入力対応モデルがありません。先に Pi でビジョンプロバイダーを設定してください。",
+      "select": "ビジョンモデルを選択",
+      "description": "画像入力対応モデルのみ表示されます。先に Pi でプロバイダー認証情報を設定してください。"
+    },
+    "parameters": {
+      "title": "実行パラメータ",
+      "maxImagesPerRun": {
+        "label": "1回あたりの最大画像数",
+        "description": "プロバイダー実行ごとに記述する画像の最大数（1–8）。"
+      },
+      "timeoutMs": {
+        "label": "バッチタイムアウト（ms）",
+        "description": "バッチ全体のデッドライン（ミリ秒、1000–25000）。"
+      },
+      "concurrency": {
+        "label": "並行数",
+        "description": "1バッチあたりの並行ビジョン呼び出し数（1–4）。"
+      },
+      "maxTokens": {
+        "label": "出力上限トークン",
+        "description": "画像ごとのビジョン出力トークン上限（128–4096）。"
+      }
+    },
+    "sources": {
+      "title": "画像ソース",
+      "userImages": {
+        "label": "ユーザー画像",
+        "description": "メッセージに添付した画像の変換を許可します。"
+      },
+      "toolImages": {
+        "label": "ツール画像",
+        "description": "ツール結果で生成された画像の変換を許可します。機密性の高いプロジェクトデータを保護するため、既定では無効です。"
+      }
+    },
+    "promptTemplate": {
+      "label": "プロンプトテンプレート",
+      "help": "前後の空白は削除され、1–4000 文字に制限されます。"
+    },
+    "errors": {
+      "loadFailed": "ビジョンブリッジ設定の読み込みに失敗しました。",
+      "modelsUnavailable": "ビジョンモデルカタログが一時的に利用できません。後で再試行してください。"
+    },
+    "save": {
+      "label": "設定を保存",
+      "saving": "保存中…",
+      "success": "保存しました",
+      "failed": "保存に失敗しました",
+      "retry": "再試行",
+      "blockedNoModel": "有効化する前にビジョンモデルを選択してください。",
+      "blockedModelMissing": "選択したモデルは利用できなくなりました。別のモデルを選択してください。",
+      "blockedCredential": "選択したモデルに利用可能な認証情報がありません。先に Pi でプロバイダーを設定してください。"
+    }
   }
 }

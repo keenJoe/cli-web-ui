@@ -215,5 +215,18 @@
   },
   "tasks": {
     "nextTaskPrompt": "Sonraki görevi başlat"
+  },
+  "visionBridge": {
+    "title": "Görüntü köprüsü",
+    "unboundSource": "Bağlantısız kaynak",
+    "cached": "önbellekte",
+    "image": "Görüntü #{{index}}",
+    "status": {
+      "processing": "İşleniyor",
+      "succeeded": "Açıklandı",
+      "failed": "Başarısız",
+      "skipped": "Atlandı",
+      "cancelled": "İptal edildi"
+    }
   }
 }

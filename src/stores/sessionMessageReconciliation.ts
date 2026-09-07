@@ -15,6 +15,13 @@ export type SessionMessageReconciliationState = {
 export type SessionMessageReconciliationResult = {
   realtimeMessages: NormalizedMessage[];
   state: SessionMessageReconciliationState;
+  /**
+   * Stable `clientMessageId` values transferred from matched optimistic user
+   * messages onto their persisted server user message ids, so the
+   * vision-bridge card stays anchored to the surviving bubble after history
+   * loads (design.md D7; task 7.5).
+   */
+  clientMessageIdByServerUserId: Map<string, string>;
 };
 
 export type SessionMessageReconciliationMergeResult =
@@ -31,6 +38,7 @@ type UserTurnFingerprint = {
 type OptimisticUserReconciliation = {
   messages: NormalizedMessage[];
   matchedServerUserIdByLocalId: Map<string, string>;
+  clientMessageIdByServerUserId: Map<string, string>;
 };
 
 export function createSessionMessageReconciliationState(): SessionMessageReconciliationState {
@@ -271,9 +279,54 @@ function findServerEchoForLocalUser(
   serverMessages: NormalizedMessage[],
   claimedServerIds: Set<string>,
 ): NormalizedMessage | null {
-  const localFingerprint = userTurnFingerprint(localMessage);
   const localTime = readMessageTime(localMessage);
-  if (!localFingerprint || localTime === null) {
+  if (localTime === null) {
+    return null;
+  }
+
+  // 7.5: prefer a stable clientMessageId match over the text/image/file
+  // fingerprint. The server validates (or generates) clientMessageId, so when
+  // the persisted user message echoes it, that identity is authoritative even
+  // if the provider normalized whitespace or image representation.
+  const localClientMessageId =
+    typeof localMessage.clientMessageId === 'string' && localMessage.clientMessageId;
+  if (localClientMessageId) {
+    const candidates: NormalizedMessage[] = [];
+    for (const serverMessage of serverMessages) {
+      if (claimedServerIds.has(serverMessage.id)) {
+        continue;
+      }
+      if (serverMessage.kind !== 'text' || serverMessage.role !== 'user') {
+        continue;
+      }
+      if (
+        typeof serverMessage.clientMessageId !== 'string'
+        || serverMessage.clientMessageId !== localClientMessageId
+      ) {
+        continue;
+      }
+      const serverTime = readMessageTime(serverMessage);
+      if (
+        serverTime === null
+        || serverTime < localTime
+        || serverTime - localTime > LOCAL_USER_DEDUPE_WINDOW_MS
+      ) {
+ continue; }
+      candidates.push(serverMessage);
+    }
+    // A unique clientMessageId echo wins; an ambiguous echo falls back to the
+    // fingerprint matcher rather than guessing the nearest message.
+    if (candidates.length === 1) {
+      return candidates[0];
+    }
+    if (candidates.length > 1) {
+      return null;
+    }
+    // No clientMessageId echo: fall through to the fingerprint path.
+  }
+
+  const localFingerprint = userTurnFingerprint(localMessage);
+  if (!localFingerprint) {
     return null;
   }
 
@@ -322,6 +375,7 @@ function reconcileOptimisticUserEchoes(
 ): OptimisticUserReconciliation {
   const claimedServerIds = new Set<string>();
   const matchedServerUserIdByLocalId = new Map<string, string>();
+  const clientMessageIdByServerUserId = new Map<string, string>();
 
   const messages = realtimeMessages.filter((message) => {
     if (!message.id.startsWith('local_')) {
@@ -335,10 +389,13 @@ function reconcileOptimisticUserEchoes(
 
     claimedServerIds.add(serverEcho.id);
     matchedServerUserIdByLocalId.set(message.id, serverEcho.id);
+    if (typeof message.clientMessageId === 'string' && message.clientMessageId) {
+      clientMessageIdByServerUserId.set(serverEcho.id, message.clientMessageId);
+    }
     return false;
   });
 
-  return { messages, matchedServerUserIdByLocalId };
+  return { messages, matchedServerUserIdByLocalId, clientMessageIdByServerUserId };
 }
 
 export function removeOptimisticUserEchoes(
@@ -718,7 +775,7 @@ export function reconcileSessionMessages(
   const state = cloneReconciliationState(currentState);
   reclaimClaimsFromTombstones(state);
   if (realtimeMessages.length === 0) {
-    return { realtimeMessages, state };
+    return { realtimeMessages, state, clientMessageIdByServerUserId: new Map() };
   }
 
   const serverIds = new Set(serverMessages.map((message) => message.id));
@@ -850,7 +907,11 @@ export function reconcileSessionMessages(
   retainRealtimeMessageLineage(state, remainingRealtimeMessages);
   reclaimClaimsFromTombstones(state);
 
-  return { realtimeMessages: remainingRealtimeMessages, state };
+  return {
+    realtimeMessages: remainingRealtimeMessages,
+    state,
+    clientMessageIdByServerUserId: optimisticUserReconciliation.clientMessageIdByServerUserId,
+  };
 }
 
 /**
@@ -872,24 +933,43 @@ export function pruneRealtimeSupersededByServer(
 function combineReconciledSessionMessages(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
+  clientMessageIdByServerUserId: Map<string, string> = new Map(),
 ): NormalizedMessage[] {
+  // Transfer the stable clientMessageId from a matched optimistic user echo
+  // onto its persisted server user message so the vision-bridge card stays
+  // anchored to the surviving bubble (design.md D7; task 7.5).
+  const serverWithClientId = clientMessageIdByServerUserId.size > 0
+    ? serverMessages.map((message) => {
+        const clientId = clientMessageIdByServerUserId.get(message.id);
+        if (
+          clientId
+          && message.kind === 'text'
+          && message.role === 'user'
+          && typeof message.clientMessageId !== 'string'
+        ) {
+          return { ...message, clientMessageId: clientId };
+        }
+        return message;
+      })
+    : serverMessages;
+
   if (realtimeMessages.length === 0) {
-    return serverMessages;
+    return serverWithClientId;
   }
-  if (serverMessages.length === 0) {
+  if (serverWithClientId.length === 0) {
     return realtimeMessages;
   }
 
-  const serverIds = new Set(serverMessages.map((message) => message.id));
+  const serverIds = new Set(serverWithClientId.map((message) => message.id));
   const extraMessages = realtimeMessages.filter(
     (message) => !serverIds.has(message.id),
   );
 
   if (extraMessages.length === 0) {
-    return serverMessages;
+    return serverWithClientId;
   }
 
-  return [...serverMessages, ...extraMessages].sort(compareMessagesChronologically);
+  return [...serverWithClientId, ...extraMessages].sort(compareMessagesChronologically);
 }
 
 /** Reconciles and merges persisted/realtime rows in one pass for the store. */
@@ -908,6 +988,7 @@ export function reconcileAndMergeSessionMessages(
     mergedMessages: combineReconciledSessionMessages(
       serverMessages,
       reconciliation.realtimeMessages,
+      reconciliation.clientMessageIdByServerUserId,
     ),
   };
 }

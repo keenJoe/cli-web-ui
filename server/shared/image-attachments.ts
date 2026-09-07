@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { repairMojibakeName } from '../../shared/encoding.js';
+import type { VisionBridgeImageErrorCode } from '../../shared/vision-bridge.js';
 
 /**
  * Shared chat-attachment plumbing for every provider runtime.
@@ -30,6 +31,8 @@ export type ImageAttachmentDescriptor = {
   name?: string;
   mimeType?: string;
   size?: number;
+  /** Raw-byte SHA-256 (64 lowercase hex) computed at upload; empty for old attachments. */
+  contentHash?: string;
 };
 
 /** Provider-neutral descriptor used for both image and non-image chat attachments. */
@@ -434,4 +437,200 @@ export function buildCodexInputItems(prompt: string, images: unknown, cwd?: stri
     });
   }
   return items;
+}
+
+// ---------------------------
+//----------------- TRUSTED PI IMAGE READER ------------
+/**
+ * Base64 image payload in the exact shape Pi's RPC `ImageContent` expects.
+ * `readTrustedPiImages` produces these; the Pi runtime passes them to
+ * `rpc.prompt()` unchanged (no data URL prefix, no path descriptor cast).
+ */
+export type PiImageContent = {
+  /** Fixed image-content discriminator required by Pi RPC. */
+  type: 'image';
+  /** Base64-encoded raw image bytes. */
+  data: string;
+  /** Media type detected from the actual magic bytes. */
+  mimeType: string;
+};
+
+/**
+ * One per-image read failure from `readTrustedPiImages`. A single failure
+ * never blocks the text prompt or the other valid images in the batch.
+ */
+export type ImageReadFailure = {
+  /** Zero-based index into the descriptors array passed to the reader. */
+  index: number;
+  /** Stable, sanitized per-image error code. */
+  errorCode: VisionBridgeImageErrorCode;
+  /** Non-sensitive, human-readable reason for the failure. */
+  reason: string;
+};
+
+/** Default per-image raw-byte cap (10 MiB) for the trusted Pi image reader. */
+const DEFAULT_MAX_BYTES_PER_IMAGE = 10 * 1024 * 1024;
+/** Default cumulative raw-byte cap (32 MiB) per read batch. */
+const DEFAULT_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Checks that a resolved path is a direct child *file* of `directory`
+ * (i.e. its parent is exactly the directory), accounting for the directory
+ * itself being reachable through a symlink. This is stricter than the general
+ * `isAllowedImageSourcePath` containment check: browser attachments must be
+ * direct children of the upload store, never files in a subdirectory and never
+ * files elsewhere on the machine (the run `cwd` is NOT an allowed root here).
+ */
+function isDirectChildOfDirectory(candidate: string, directory: string): boolean {
+  const parent = path.dirname(path.resolve(candidate));
+  return getDirectoryPathVariants(directory).includes(parent);
+}
+
+/**
+ * Detects an image media type from real file bytes (magic numbers) only.
+ * Extensions and the descriptor's `mimeType` field are deliberately ignored
+ * because they are attacker-controllable. Returns `null` for SVG/BMP and
+ * anything that is not JPEG, PNG, GIF, or WebP.
+ */
+function detectImageMagicMimeType(bytes: Buffer): string | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+  if (bytes.length >= 6) {
+    const header = bytes.toString('ascii', 0, 6);
+    if (header === 'GIF87a' || header === 'GIF89a') {
+      return 'image/gif';
+    }
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes.toString('ascii', 0, 4) === 'RIFF' &&
+    bytes.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  return null;
+}
+
+/**
+ * Reads browser-attached images into safe Pi `ImageContent` payloads.
+ *
+ * This is the trusted boundary between host path attachments and Pi's image
+ * input. It only ever accepts files that resolve (after `realpath`) to a
+ * direct child of the global upload store (`getGlobalImageAssetsDir`); the
+ * `cwd` option is used solely to resolve relative descriptor paths and is
+ * never itself an allowed root. Each accepted file must be JPEG/PNG/GIF/WebP
+ * by magic bytes, under `maxBytesPerImage` (default 10 MiB), and each batch is
+ * under `maxTotalBytes` (default 32 MiB).
+ *
+ * Failures keep the original descriptor index and a sanitized error code, so
+ * one bad image cannot block the text or the other valid images. Never casts
+ * descriptor bytes through `as never` to pretend an arbitrary path is an image.
+ */
+export async function readTrustedPiImages(
+  descriptors: readonly ChatAttachmentDescriptor[],
+  options: {
+    cwd?: string;
+    maxBytesPerImage?: number;
+    maxTotalBytes?: number;
+  } = {},
+): Promise<{ images: PiImageContent[]; failures: ImageReadFailure[] }> {
+  const {
+    cwd,
+    maxBytesPerImage = DEFAULT_MAX_BYTES_PER_IMAGE,
+    maxTotalBytes = DEFAULT_MAX_TOTAL_BYTES,
+  } = options;
+
+  const assetsDir = getGlobalImageAssetsDir();
+  const images: PiImageContent[] = [];
+  const failures: ImageReadFailure[] = [];
+  let totalBytes = 0;
+
+  for (let index = 0; index < descriptors.length; index += 1) {
+    const descriptor = descriptors[index];
+    const resolvedPath = resolveImageAbsolutePath(cwd, descriptor.path);
+
+    // Browser attachments must be direct children of the upload store only.
+    if (!isDirectChildOfDirectory(resolvedPath, assetsDir)) {
+      failures.push({ index, errorCode: 'IMAGE_UNSAFE', reason: '图片不在受信的全局上传目录内' });
+      continue;
+    }
+
+    let canonicalPath: string;
+    try {
+      canonicalPath = await fs.realpath(resolvedPath);
+      // Re-check after symlink resolution so an in-store link cannot escape.
+      if (!isDirectChildOfDirectory(canonicalPath, assetsDir)) {
+        failures.push({ index, errorCode: 'IMAGE_UNSAFE', reason: '符号链接指向了上传目录之外' });
+        continue;
+      }
+    } catch {
+      failures.push({ index, errorCode: 'IMAGE_UNREADABLE', reason: '图片文件不存在或不可读取' });
+      continue;
+    }
+
+    let stats;
+    try {
+      stats = await fs.stat(canonicalPath);
+    } catch {
+      failures.push({ index, errorCode: 'IMAGE_UNREADABLE', reason: '无法读取图片文件状态' });
+      continue;
+    }
+    if (!stats.isFile()) {
+      failures.push({ index, errorCode: 'IMAGE_UNREADABLE', reason: '目标不是普通文件' });
+      continue;
+    }
+    if (stats.size > maxBytesPerImage) {
+      failures.push({ index, errorCode: 'IMAGE_TOO_LARGE', reason: '单张图片超过大小上限' });
+      continue;
+    }
+
+    let bytes: Buffer;
+    try {
+      bytes = await fs.readFile(canonicalPath);
+    } catch {
+      failures.push({ index, errorCode: 'IMAGE_UNREADABLE', reason: '图片内容读取失败' });
+      continue;
+    }
+
+    // Re-check against real bytes so a file that grew between stat and read
+    // is still rejected before it is projected as a Pi image.
+    if (bytes.length > maxBytesPerImage) {
+      failures.push({ index, errorCode: 'IMAGE_TOO_LARGE', reason: '单张图片超过大小上限' });
+      continue;
+    }
+
+    const mimeType = detectImageMagicMimeType(bytes);
+    if (!mimeType) {
+      failures.push({ index, errorCode: 'IMAGE_UNSUPPORTED', reason: '仅支持 JPEG/PNG/GIF/WebP 图片' });
+      continue;
+    }
+
+    if (totalBytes + bytes.length > maxTotalBytes) {
+      failures.push({ index, errorCode: 'IMAGE_TOO_LARGE', reason: '图片总字节超过批次上限' });
+      continue;
+    }
+    totalBytes += bytes.length;
+
+    images.push({
+      type: 'image',
+      data: bytes.toString('base64'),
+      mimeType,
+    });
+  }
+
+  return { images, failures };
 }

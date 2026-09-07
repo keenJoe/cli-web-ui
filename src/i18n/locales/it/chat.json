@@ -215,5 +215,18 @@
   },
   "tasks": {
     "nextTaskPrompt": "Inizia l'attività successiva"
+  },
+  "visionBridge": {
+    "title": "Ponte visivo",
+    "unboundSource": "Origine non collegata",
+    "cached": "in cache",
+    "image": "Immagine #{{index}}",
+    "status": {
+      "processing": "Elaborazione",
+      "succeeded": "Descritto",
+      "failed": "Fallito",
+      "skipped": "Saltato",
+      "cancelled": "Annullato"
+    }
   }
 }

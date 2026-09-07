@@ -138,6 +138,20 @@ function readRequiredSessionId(data: AnyRecord): string | null {
 }
 
 /**
+ * Validates a client-supplied optimistic message id (design.md D7). It must be
+ * a bounded, charset-safe token; anything else is treated as absent so the
+ * server falls back to run-local correlation + the text/image fingerprint. The
+ * client can never set `runId`/`providerSessionId` through this field.
+ */
+function readClientMessageId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const clientMessageId = value.trim();
+  if (clientMessageId.length === 0 || clientMessageId.length > 128) return undefined;
+  if (!/^[A-Za-z0-9_-]+$/.test(clientMessageId)) return undefined;
+  return clientMessageId;
+}
+
+/**
  * Handles `chat.send`: resolves the session row (provider, project path, and
  * provider-native id all come from the database — never from the client),
  * registers the run, and dispatches to the provider runtime.
@@ -192,6 +206,11 @@ async function handleChatSend(
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
 
+  // Stable optimistic-message identity (design.md D7). Read from the options
+  // bag (and top-level as a convenience); validated and NEVER used to choose
+  // run/session identity.
+  const clientMessageId = readClientMessageId(clientOptions.clientMessageId ?? data.clientMessageId);
+
   const attachmentCandidates = [
     ...normalizeAttachmentDescriptors(clientOptions.images),
     ...normalizeAttachmentDescriptors(clientOptions.files),
@@ -215,6 +234,8 @@ async function handleChatSend(
     files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
     sessionId,
     providerSessionId: session.provider_session_id,
+    // Validated (or dropped) optimistic-message identity; never client run/session ids.
+    clientMessageId,
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
   };

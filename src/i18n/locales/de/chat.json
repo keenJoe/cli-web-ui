@@ -215,5 +215,18 @@
   },
   "tasks": {
     "nextTaskPrompt": "Nächste Aufgabe starten"
+  },
+  "visionBridge": {
+    "title": "Vision-Bridge",
+    "unboundSource": "Ungebundene Quelle",
+    "cached": "zwischengespeichert",
+    "image": "Bild #{{index}}",
+    "status": {
+      "processing": "Verarbeitung",
+      "succeeded": "Beschrieben",
+      "failed": "Fehlgeschlagen",
+      "skipped": "Übersprungen",
+      "cancelled": "Abgebrochen"
+    }
   }
 }

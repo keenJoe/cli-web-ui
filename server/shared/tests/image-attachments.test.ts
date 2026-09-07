@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,12 +9,14 @@ import {
   appendImagesInputTag,
   buildClaudeUserContent,
   buildCodexInputItems,
+  getGlobalImageAssetsDir,
   isImageAttachmentDescriptor,
   normalizeAttachmentDescriptors,
   isAllowedImageSourcePath,
   normalizeImageDescriptors,
   parseFilesInputTag,
   parseImagesInputTag,
+  readTrustedPiImages,
   resolveImageMediaType,
   toImageAttachments,
 } from '@/shared/image-attachments.js';
@@ -350,4 +352,218 @@ test('provider builders refuse descriptors outside the allowed roots', async () 
     cwd,
   );
   assert.deepEqual(claudeContent, [{ type: 'text', text: 'prompt' }]);
+});
+
+// ---------------------------
+//----------------- TRUSTED PI IMAGE READER ------------
+// Unique filename counter for upload-store fixtures created by these tests.
+let storeFixtureSeq = 0;
+
+function nextStoreFixtureName(tag: string, ext = 'png'): string {
+  storeFixtureSeq += 1;
+  return `vb-test-${process.pid}-${Date.now()}-${storeFixtureSeq}-${tag}.${ext}`;
+}
+
+async function writeAssetsFixture(tag: string, bytes: Buffer, ext = 'png'): Promise<string> {
+  const assetsDir = getGlobalImageAssetsDir();
+  await mkdir(assetsDir, { recursive: true });
+  const filePath = path.join(assetsDir, nextStoreFixtureName(tag, ext));
+  await writeFile(filePath, bytes);
+  return filePath;
+}
+
+test('readTrustedPiImages reads a store image into a Pi image payload', async () => {
+  const filePath = await writeAssetsFixture('valid', PNG_BYTES);
+  try {
+    const result = await readTrustedPiImages([{ path: filePath, mimeType: 'image/png' }]);
+
+    assert.equal(result.failures.length, 0);
+    assert.equal(result.images.length, 1);
+    assert.deepEqual(result.images[0], {
+      type: 'image',
+      data: PNG_BYTES.toString('base64'),
+      mimeType: 'image/png',
+    });
+  } finally {
+    await rm(filePath, { force: true });
+  }
+});
+
+test('readTrustedPiImages detects JPEG/PNG/GIF/WebP from magic bytes, not filenames', async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+  const gif = Buffer.from('GIF89a1234');
+  const webp = Buffer.from('RIFF\x00\x00\x00\x00WEBPabc');
+  const cases = [
+    { tag: 'jpeg', ext: 'bin', bytes: jpeg, mimeType: 'image/jpeg' },
+    { tag: 'png', ext: 'bin', bytes: PNG_BYTES, mimeType: 'image/png' },
+    { tag: 'gif', ext: 'bin', bytes: gif, mimeType: 'image/gif' },
+    { tag: 'webp', ext: 'bin', bytes: webp, mimeType: 'image/webp' },
+  ];
+
+  const filePaths: string[] = [];
+  try {
+    for (const c of cases) {
+      filePaths.push(await writeAssetsFixture(c.tag, c.bytes, c.ext));
+    }
+
+    const result = await readTrustedPiImages(filePaths.map((p) => ({ path: p })));
+
+    assert.equal(result.failures.length, 0);
+    assert.deepEqual(
+      result.images.map((i) => i.mimeType),
+      cases.map((c) => c.mimeType),
+    );
+  } finally {
+    for (const p of filePaths) {
+      await rm(p, { force: true });
+    }
+  }
+});
+
+test('readTrustedPiImages rejects paths outside the upload store', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'vb-outside-'));
+  try {
+    const outsidePath = path.join(tempDir, 'secret.png');
+    await writeFile(outsidePath, PNG_BYTES);
+
+    const result = await readTrustedPiImages([{ path: outsidePath, mimeType: 'image/png' }]);
+
+    assert.equal(result.images.length, 0);
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].index, 0);
+    assert.equal(result.failures[0].errorCode, 'IMAGE_UNSAFE');
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('readTrustedPiImages refuses symlinks that escape the upload store', async (t) => {
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), 'vb-symlink-outside-'));
+  try {
+    const outsideFile = path.join(outsideDir, 'secret.png');
+    await writeFile(outsideFile, PNG_BYTES);
+
+    const assetsDir = getGlobalImageAssetsDir();
+    await mkdir(assetsDir, { recursive: true });
+    const linkPath = path.join(assetsDir, nextStoreFixtureName('link'));
+    if (!(await createSymlinkIfSupported(outsideFile, linkPath, 'file'))) {
+      t.skip('Symlink creation is not supported in this environment');
+      return;
+    }
+
+    try {
+      const result = await readTrustedPiImages([{ path: linkPath, mimeType: 'image/png' }]);
+
+      assert.equal(result.images.length, 0);
+      assert.equal(result.failures.length, 1);
+      assert.equal(result.failures[0].index, 0);
+      assert.equal(result.failures[0].errorCode, 'IMAGE_UNSAFE');
+      // The escaped target's bytes must never surface in the payload.
+      assert.ok(!JSON.stringify(result).includes(PNG_BYTES.toString('base64')));
+    } finally {
+      await rm(linkPath, { force: true });
+    }
+  } finally {
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test('readTrustedPiImages reports missing files as IMAGE_UNREADABLE', async () => {
+  const assetsDir = getGlobalImageAssetsDir();
+  await mkdir(assetsDir, { recursive: true });
+  const missingPath = path.join(assetsDir, nextStoreFixtureName('missing'));
+
+  const result = await readTrustedPiImages([{ path: missingPath, mimeType: 'image/png' }]);
+
+  assert.equal(result.images.length, 0);
+  assert.equal(result.failures.length, 1);
+  assert.equal(result.failures[0].index, 0);
+  assert.equal(result.failures[0].errorCode, 'IMAGE_UNREADABLE');
+});
+
+test('readTrustedPiImages rejects unsupported magic bytes', async () => {
+  const filePath = await writeAssetsFixture('svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'));
+  try {
+    const result = await readTrustedPiImages([{ path: filePath, mimeType: 'image/png' }]);
+
+    assert.equal(result.images.length, 0);
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].index, 0);
+    assert.equal(result.failures[0].errorCode, 'IMAGE_UNSUPPORTED');
+  } finally {
+    await rm(filePath, { force: true });
+  }
+});
+
+test('readTrustedPiImages skips images over the per-image byte cap', async () => {
+  const filePath = await writeAssetsFixture('big', PNG_BYTES);
+  try {
+    const result = await readTrustedPiImages([{ path: filePath }], { maxBytesPerImage: 10 });
+
+    assert.equal(result.images.length, 0);
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].index, 0);
+    assert.equal(result.failures[0].errorCode, 'IMAGE_TOO_LARGE');
+  } finally {
+    await rm(filePath, { force: true });
+  }
+});
+
+test('readTrustedPiImages enforces the cumulative byte budget', async () => {
+  const fileA = await writeAssetsFixture('total-a', PNG_BYTES);
+  const fileB = await writeAssetsFixture('total-b', PNG_BYTES);
+  try {
+    const result = await readTrustedPiImages([{ path: fileA }, { path: fileB }], {
+      maxTotalBytes: PNG_BYTES.length + 1,
+    });
+
+    assert.equal(result.images.length, 1);
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].index, 1);
+    assert.equal(result.failures[0].errorCode, 'IMAGE_TOO_LARGE');
+  } finally {
+    await rm(fileA, { force: true });
+    await rm(fileB, { force: true });
+  }
+});
+
+test('readTrustedPiImages returns partial success for mixed valid and invalid images', async () => {
+  const fileValidA = await writeAssetsFixture('mix-valid-a', PNG_BYTES);
+  const fileSvg = await writeAssetsFixture('mix-svg', Buffer.from('<svg></svg>'));
+  const fileValidB = await writeAssetsFixture('mix-valid-b', PNG_BYTES);
+  try {
+    const result = await readTrustedPiImages([
+      { path: fileValidA },
+      { path: path.join(os.tmpdir(), `vb-outside-${storeFixtureSeq + 1}.png`) },
+      { path: fileSvg },
+      { path: fileValidB },
+    ]);
+
+    assert.equal(result.images.length, 2);
+    assert.equal(result.failures.length, 2);
+    assert.deepEqual(result.failures[0], { index: 1, errorCode: 'IMAGE_UNSAFE', reason: '图片不在受信的全局上传目录内' });
+    assert.deepEqual(result.failures[1], { index: 2, errorCode: 'IMAGE_UNSUPPORTED', reason: '仅支持 JPEG/PNG/GIF/WebP 图片' });
+  } finally {
+    await rm(fileValidA, { force: true });
+    await rm(fileSvg, { force: true });
+    await rm(fileValidB, { force: true });
+  }
+});
+
+test('readTrustedPiImages uses cwd only for relative resolution, never as an allowed root', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'vb-cwd-'));
+  try {
+    await writeFile(path.join(tempDir, 'shot.png'), PNG_BYTES);
+
+    const result = await readTrustedPiImages([{ path: 'shot.png', mimeType: 'image/png' }], {
+      cwd: tempDir,
+    });
+
+    assert.equal(result.images.length, 0);
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].index, 0);
+    assert.equal(result.failures[0].errorCode, 'IMAGE_UNSAFE');
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });

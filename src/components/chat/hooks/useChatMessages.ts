@@ -140,6 +140,10 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               timestamp: msg.timestamp,
               images,
               files,
+              // Carry the stable client message identity so the vision-bridge
+              // card can anchor to this bubble (design.md D7). Absent for
+              // history rows the server could not uniquely anchor.
+              clientMessageId: typeof msg.clientMessageId === 'string' ? msg.clientMessageId : undefined,
               ...sharedMetadata,
             });
           }
@@ -269,14 +273,18 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
         }
         break;
 
-      // stream_end, complete, status, permission_*, session_created
-      // are control events — not rendered as messages
+      // stream_end, complete, status, permission_*, session_created, and
+      // vision_bridge are control events — not rendered as messages. The
+      // vision-bridge card state lives in the session store's structured
+      // observation state; a plain text marker is never trusted as a card
+      // (design.md D4; spec "可信卡片和消息一致性").
       case 'stream_end':
       case 'complete':
       case 'status':
       case 'permission_request':
       case 'permission_cancelled':
       case 'session_created':
+      case 'vision_bridge':
         // Skip — these are handled by useChatRealtimeHandlers
         break;
 

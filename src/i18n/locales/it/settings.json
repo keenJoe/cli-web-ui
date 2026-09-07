@@ -93,7 +93,8 @@
     "tasks": "Attività",
     "notifications": "Notifiche",
     "plugins": "Plugin",
-    "about": "Informazioni"
+    "about": "Informazioni",
+    "visionBridge": "Bridge visivo"
   },
   "notifications": {
     "title": "Notifiche",
@@ -486,5 +487,79 @@
     "installAriaLabel": "URL repository git del plugin",
     "tab": "scheda",
     "runningStatus": "in esecuzione"
+  },
+  "visionBridge": {
+    "title": "Bridge visivo",
+    "description": "Converte le immagini in descrizioni testuali per i modelli che non possono vedere le immagini. Le immagini vengono inviate al provider del modello visivo selezionato.",
+    "loading": "Caricamento impostazioni bridge visivo…",
+    "noApiKeyNote": "Le credenziali visive sono risolte tramite la configurazione del provider Pi. Qui non vengono salvate chiavi API o URL di base.",
+    "enable": {
+      "label": "Attiva bridge visivo",
+      "description": "Se attivato, le immagini nei tuoi messaggi vengono descritte da un modello visivo prima di raggiungere il modello attuale."
+    },
+    "confirm": {
+      "title": "Attiva bridge visivo",
+      "body": "L'attivazione del bridge visivo invia le immagini dei tuoi messaggi al provider del modello visivo selezionato. Rivedi l'informativa sull'invio prima di continuare.",
+      "provider": "Provider",
+      "model": "Modello",
+      "toolImagesOff": "Le immagini degli strumenti non verranno inviate",
+      "toolImagesOn": "Le immagini degli strumenti verranno inviate",
+      "continue": "Attiva",
+      "cancel": "Annulla"
+    },
+    "model": {
+      "label": "Modello visivo",
+      "noneAvailable": "Nessun modello con supporto per immagini. Configura prima un provider visivo in Pi.",
+      "select": "Seleziona un modello visivo",
+      "description": "Sono elencati solo i modelli con supporto per l'input di immagini. Configura prima le credenziali del provider in Pi."
+    },
+    "parameters": {
+      "title": "Parametri di esecuzione",
+      "maxImagesPerRun": {
+        "label": "Max immagini per esecuzione",
+        "description": "Numero massimo di immagini descritte per esecuzione del provider (1–8)."
+      },
+      "timeoutMs": {
+        "label": "Timeout batch (ms)",
+        "description": "Scadenza totale del batch in millisecondi (1000–25000)."
+      },
+      "concurrency": {
+        "label": "Concorrenza",
+        "description": "Chiamate visive simultanee per batch (1–4)."
+      },
+      "maxTokens": {
+        "label": "Max token di output",
+        "description": "Limite di token di output per immagine (128–4096)."
+      }
+    },
+    "sources": {
+      "title": "Sorgenti immagini",
+      "userImages": {
+        "label": "Immagini utente",
+        "description": "Consenti la conversione delle immagini che alleghi ai tuoi messaggi."
+      },
+      "toolImages": {
+        "label": "Immagini degli strumenti",
+        "description": "Consenti la conversione delle immagini prodotte dai risultati degli strumenti. Disattivato per impostazione predefinita per proteggere i dati di progetto potenzialmente sensibili."
+      }
+    },
+    "promptTemplate": {
+      "label": "Modello di prompt",
+      "help": "Ridotto a 1–4000 caratteri."
+    },
+    "errors": {
+      "loadFailed": "Caricamento della configurazione del bridge visivo non riuscito.",
+      "modelsUnavailable": "Il catalogo dei modelli visivi è temporaneamente non disponibile. Riprova più tardi."
+    },
+    "save": {
+      "label": "Salva configurazione",
+      "saving": "Salvataggio…",
+      "success": "Salvato",
+      "failed": "Salvataggio non riuscito",
+      "retry": "Riprova",
+      "blockedNoModel": "Seleziona un modello visivo prima di attivare.",
+      "blockedModelMissing": "Il modello selezionato non è più disponibile. Scegli un altro modello.",
+      "blockedCredential": "Il modello selezionato non ha credenziali disponibili. Configura prima il provider in Pi."
+    }
   }
 }

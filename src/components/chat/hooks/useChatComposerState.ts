@@ -915,12 +915,17 @@ export function useChatComposerState({
       }
 
       const attachmentRecords = uploadedAttachments as ChatAttachment[];
+      // Stable optimistic-message identity shared with the server run request.
+      // The vision-bridge card anchors to this id so the structured
+      // observation stays attached to this user bubble (design.md D7).
+      const clientMessageId = `cm_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
       const userMessage: ChatMessage = {
         type: 'user',
         content: currentInput,
         images: attachmentRecords.filter(isImageAttachment),
         files: attachmentRecords.filter((attachment) => !isImageAttachment(attachment)),
         timestamp: new Date(),
+        clientMessageId,
       };
 
       addMessage(userMessage);
@@ -945,6 +950,7 @@ export function useChatComposerState({
         options: {
           ...sendOptions,
           attachments: uploadedAttachments,
+          clientMessageId,
         },
       });
 

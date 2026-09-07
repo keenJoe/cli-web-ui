@@ -89,6 +89,9 @@ function chatMessageToNormalized(
     // its files immediately, before the server-backed copy replaces it.
     images: Array.isArray(msg.images) && msg.images.length > 0 ? msg.images : undefined,
     files: Array.isArray(msg.files) && msg.files.length > 0 ? msg.files : undefined,
+    // Carry the stable client message identity so the vision-bridge card can
+    // anchor to this optimistic bubble (design.md D7; task 7.1).
+    clientMessageId: typeof msg.clientMessageId === 'string' && msg.clientMessageId ? msg.clientMessageId : undefined,
   } as NormalizedMessage;
 }
 
@@ -270,6 +273,14 @@ export function useChatSessionState({
   const storeMessages = activeSessionId
     ? sessionStore.getMessages(activeSessionId)
     : EMPTY_NORMALIZED_MESSAGES;
+
+  // Structured vision-bridge observation cards for the viewed session. They are
+  // derived from the store's per-session observation state (realtime events +
+  // history batch items), never from natural-language text markers
+  // (design.md D4; spec "可信卡片和消息一致性").
+  const visionBridgeCards = activeSessionId
+    ? sessionStore.getVisionBridgeCards(activeSessionId)
+    : [];
 
   // Reset viewHiddenCount when store messages change
   const prevStoreLenRef = useRef(0);
@@ -897,5 +908,6 @@ export function useChatSessionState({
     scrollToBottomAndReset,
     isNearBottom,
     handleScroll,
+    visionBridgeCards,
   };
 }

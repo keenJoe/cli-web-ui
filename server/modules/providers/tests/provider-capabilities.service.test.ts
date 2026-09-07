@@ -15,7 +15,7 @@ test('T25: pi capabilities expose only plan/bypassPermissions with bypassPermiss
   assert.equal(caps.provider, 'pi');
   assert.deepEqual(caps.permissionModes, ['plan', 'bypassPermissions']);
   assert.equal(caps.defaultPermissionMode, 'bypassPermissions');
-  assert.equal(caps.supportsPermissionRequests, false);
+  assert.equal(caps.supportsPermissionRequests, true);
 });
 
 test('pi capability facets match runtime support', () => {

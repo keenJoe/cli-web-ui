@@ -112,7 +112,8 @@
     "browser": "Browser",
     "notifications": "Notifications",
     "plugins": "Plugins",
-    "about": "About"
+    "about": "About",
+    "visionBridge": "Vision Bridge"
   },
   "notifications": {
     "title": "Notifications",
@@ -577,5 +578,110 @@
     "installAriaLabel": "Plugin git repository URL",
     "tab": "tab",
     "runningStatus": "running"
+  },
+  "visionBridge": {
+    "title": "Vision Bridge",
+    "description": "Convert images to text descriptions for models that cannot see images. Your images are sent to the selected vision model provider.",
+    "loading": "Loading vision bridge settings…",
+    "noApiKeyNote": "Vision credentials are resolved through your Pi provider configuration. No API key or base URL is stored here.",
+    "enable": {
+      "label": "Enable vision bridge",
+      "description": "When enabled, images in your messages are described by a vision model before reaching the current model."
+    },
+    "confirm": {
+      "title": "Enable vision bridge",
+      "body": "Enabling the vision bridge sends images from your messages to the selected vision model provider. Review the outbound policy before continuing.",
+      "provider": "Provider",
+      "model": "Model",
+      "toolImagesOff": "Tool images will not be sent",
+      "toolImagesOn": "Tool images will be sent",
+      "continue": "Enable",
+      "cancel": "Cancel"
+    },
+    "model": {
+      "label": "Visual model",
+      "noneAvailable": "No image-capable models available. Configure a vision provider in Pi first.",
+      "select": "Select a vision model",
+      "customOption": "Custom model…",
+      "description": "Only models that support image input are listed. Choose “Custom model” to enter any provider/model and point it at your own gateway.",
+      "notImage": "This model does not support image input — vision bridge conversion will fail. Choose an image-capable model (e.g. glm-4v-flash / qwen-vl-plus).",
+      "supportsImage": "Supports image input",
+      "noImageInput": "Does not support image input",
+      "context": "Context ",
+      "maxOutput": "Max single-response output ",
+      "reasoningOn": "Supports reasoning",
+      "reasoningOff": "No reasoning support"
+    },
+    "apiFormat": {
+      "label": "API format",
+      "description": "Usually inferred from the provider. Only set manually for a custom gateway.",
+      "options": {
+        "auto": "Auto (infer from provider)",
+        "openai": "OpenAI-compatible",
+        "anthropic": "Anthropic",
+        "google": "Google Gemini",
+        "mistral": "Mistral",
+        "bedrock": "AWS Bedrock",
+        "azure-openai": "Azure OpenAI",
+        "vertex": "Google Vertex"
+      }
+    },
+    "baseUrl": {
+      "label": "Endpoint URL (optional)",
+      "description": "Leave empty to use the provider default. Domestic providers (GLM/Qwen, etc.) need e.g. https://open.bigmodel.cn/api/paas/v4"
+    },
+    "apiKey": {
+      "label": "API Key (optional)",
+      "placeholder": "Enter a custom API key",
+      "description": "Leave empty to reuse the provider key already configured in Pi; only fill in when a separate credential is required."
+    },
+    "parameters": {
+      "title": "Run parameters",
+      "maxImagesPerRun": {
+        "label": "Max images per run",
+        "description": "Maximum number of images described per provider run (1–8)."
+      },
+      "timeoutMs": {
+        "label": "Batch timeout (ms)",
+        "description": "Whole-batch deadline in milliseconds (1000–25000)."
+      },
+      "concurrency": {
+        "label": "Concurrency",
+        "description": "Concurrent vision calls in one batch (1–4)."
+      },
+      "maxTokens": {
+        "label": "Max output tokens",
+        "description": "Per-image vision output token cap (128–4096)."
+      }
+    },
+    "sources": {
+      "title": "Image sources",
+      "userImages": {
+        "label": "User images",
+        "description": "Allow converting images you attach to your messages."
+      },
+      "toolImages": {
+        "label": "Tool images",
+        "description": "Allow converting images produced by tool results. Off by default to protect potentially sensitive project data."
+      }
+    },
+    "promptTemplate": {
+      "label": "Prompt template",
+      "help": "Trimmed to 1–4000 characters."
+    },
+    "errors": {
+      "loadFailed": "Failed to load vision bridge configuration.",
+      "modelsUnavailable": "Vision model catalog is temporarily unavailable. Retry later."
+    },
+    "save": {
+      "label": "Save configuration",
+      "saving": "Saving…",
+      "success": "Saved",
+      "failed": "Save failed",
+      "retry": "Retry",
+      "blockedNoModel": "Select a vision model before enabling.",
+      "blockedModelMissing": "The selected model is no longer available. Choose another model.",
+      "blockedCredential": "The selected model has no available credentials. Configure the provider in Pi first."
+    }
   }
 }

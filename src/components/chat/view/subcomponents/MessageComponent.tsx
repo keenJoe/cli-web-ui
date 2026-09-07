@@ -19,6 +19,8 @@ import ChatMessageFiles from './ChatMessageFiles';
 import { Markdown } from './Markdown';
 import MessageCopyControl from './MessageCopyControl';
 import MessageSpeakControl from './MessageSpeakControl';
+import VisionBridgeCard from './VisionBridgeCard';
+import type { VisionBridgeCard as VisionBridgeCardData } from '../../../../stores/visionBridgeState';
 
 type DiffLine = {
   type: string;
@@ -37,6 +39,10 @@ type MessageComponentProps = {
   showThinking?: boolean;
   selectedProject?: Project | null;
   provider: Provider | string;
+  /** Structured vision-bridge cards for the viewed session; this component
+   * attaches the ones anchored to this message (user clientMessageId or
+   * tool toolId) and ignores the rest (design.md D4; task 7.4). */
+  visionBridgeCards?: VisionBridgeCardData[];
 };
 
 type InteractiveOption = {
@@ -47,7 +53,7 @@ type InteractiveOption = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
-const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, visionBridgeCards = [] }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
@@ -77,6 +83,24 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
   const shouldHideThinkingMessage = Boolean(message.isThinking && !showThinking);
   const providerMessageLabel = getProviderBrand(provider).messageLabel;
 
+  // Vision-bridge cards anchored to this message: a user message anchors by
+  // its stable clientMessageId; a tool_use anchors by its toolId (treated as
+  // the toolCallId the vision-bridge source carries). Unbound cards are
+  // rendered at the session level by ChatMessagesPane (design.md D4/D7).
+  const anchoredVisionBridgeCards = useMemo(() => {
+    if (message.type === 'user' && typeof message.clientMessageId === 'string' && message.clientMessageId) {
+      return visionBridgeCards.filter(
+        (card) => card.anchor.kind === 'user' && card.anchor.clientMessageId === message.clientMessageId,
+      );
+    }
+    if (message.isToolUse && message.toolId) {
+      return visionBridgeCards.filter(
+        (card) => card.anchor.kind === 'tool' && card.anchor.toolCallId === message.toolId,
+      );
+    }
+    return [];
+  }, [message.type, message.clientMessageId, message.isToolUse, message.toolId, visionBridgeCards]);
+
   if (shouldHideThinkingMessage) {
     return null;
   }
@@ -99,6 +123,13 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             )}
             {message.files && message.files.length > 0 && (
               <ChatMessageFiles files={message.files} />
+            )}
+            {anchoredVisionBridgeCards.length > 0 && (
+              <div className="w-full space-y-2">
+                {anchoredVisionBridgeCards.map((card, index) => (
+                  <VisionBridgeCard key={`vb-${message.clientMessageId ?? message.toolId ?? index}`} card={card} />
+                ))}
+              </div>
             )}
             {userCopyContent.trim().length > 0 || (!message.images?.length && !message.files?.length) ? (
               <div className="group max-w-full rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:px-4">

@@ -93,7 +93,8 @@
     "tasks": "Tâches",
     "notifications": "Notifications",
     "plugins": "Plugins",
-    "about": "À propos"
+    "about": "À propos",
+    "visionBridge": "Pont vision"
   },
   "notifications": {
     "title": "Notifications",
@@ -541,5 +542,79 @@
     "installAriaLabel": "URL du dépôt git du plugin",
     "tab": "onglet",
     "runningStatus": "en cours"
+  },
+  "visionBridge": {
+    "title": "Pont vision",
+    "description": "Convertit les images en descriptions textuelles pour les modèles qui ne peuvent pas voir les images. Vos images sont envoyées au fournisseur de modèle de vision sélectionné.",
+    "loading": "Chargement des paramètres du pont vision…",
+    "noApiKeyNote": "Les identifiants de vision sont résolus via votre configuration de fournisseur Pi. Aucune clé API ni URL de base n'est stockée ici.",
+    "enable": {
+      "label": "Activer le pont vision",
+      "description": "Si activé, les images de vos messages sont décrites par un modèle de vision avant d'atteindre le modèle actuel."
+    },
+    "confirm": {
+      "title": "Activer le pont vision",
+      "body": "L'activation du pont vision envoie les images de vos messages au fournisseur de modèle de vision sélectionné. Vérifiez la politique d'envoi avant de continuer.",
+      "provider": "Fournisseur",
+      "model": "Modèle",
+      "toolImagesOff": "Les images d'outils ne seront pas envoyées",
+      "toolImagesOn": "Les images d'outils seront envoyées",
+      "continue": "Activer",
+      "cancel": "Annuler"
+    },
+    "model": {
+      "label": "Modèle de vision",
+      "noneAvailable": "Aucun modèle compatible avec l'entrée d'images. Configurez d'abord un fournisseur de vision dans Pi.",
+      "select": "Sélectionner un modèle de vision",
+      "description": "Seuls les modèles prenant en charge l'entrée d'images sont listés. Configurez d'abord les identifiants du fournisseur dans Pi."
+    },
+    "parameters": {
+      "title": "Paramètres d'exécution",
+      "maxImagesPerRun": {
+        "label": "Max d'images par exécution",
+        "description": "Nombre maximum d'images décrites par exécution de fournisseur (1–8)."
+      },
+      "timeoutMs": {
+        "label": "Délai de lot (ms)",
+        "description": "Délai global du lot en millisecondes (1000–25000)."
+      },
+      "concurrency": {
+        "label": "Concurrence",
+        "description": "Appels de vision simultanés par lot (1–4)."
+      },
+      "maxTokens": {
+        "label": "Max de jetons de sortie",
+        "description": "Plafond de jetons de sortie par image (128–4096)."
+      }
+    },
+    "sources": {
+      "title": "Sources d'images",
+      "userImages": {
+        "label": "Images utilisateur",
+        "description": "Autorise la conversion des images que vous joignez à vos messages."
+      },
+      "toolImages": {
+        "label": "Images d'outils",
+        "description": "Autorise la conversion des images produites par les résultats d'outils. Désactivé par défaut pour protéger les données de projet potentiellement sensibles."
+      }
+    },
+    "promptTemplate": {
+      "label": "Modèle de prompt",
+      "help": "Rogner à 1–4000 caractères."
+    },
+    "errors": {
+      "loadFailed": "Échec du chargement de la configuration du pont vision.",
+      "modelsUnavailable": "Le catalogue de modèles de vision est temporairement indisponible. Réessayez plus tard."
+    },
+    "save": {
+      "label": "Enregistrer la configuration",
+      "saving": "Enregistrement…",
+      "success": "Enregistré",
+      "failed": "Échec de l'enregistrement",
+      "retry": "Réessayer",
+      "blockedNoModel": "Sélectionnez un modèle de vision avant l'activation.",
+      "blockedModelMissing": "Le modèle sélectionné n'est plus disponible. Choisissez un autre modèle.",
+      "blockedCredential": "Le modèle sélectionné n'a pas d'identifiants disponibles. Configurez d'abord le fournisseur dans Pi."
+    }
   }
 }

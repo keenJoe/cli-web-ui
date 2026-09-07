@@ -64,6 +64,12 @@ import { browserUseService } from './modules/browser-use/browser-use.service.js'
 import { initializeDatabase, sessionsDb } from './modules/database/index.js';
 import { configureWebPush } from './modules/notifications/index.js';
 import { IS_PLATFORM } from './constants/config.js';
+import {
+  configureVisionBridgeLaunchPolicy,
+  createPiVisionModelCatalogProvider,
+  probePiVisionModelsRaw,
+} from './modules/providers/list/pi/index.js';
+import { createVisionBridgeModule } from './modules/vision-bridge/index.js';
 
 const __dirname = getModuleDirectory(import.meta.url);
 // The server source runs from /server, while the compiled output runs from /dist-server/server.
@@ -205,6 +211,15 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 
 // Unified provider MCP routes (protected)
 app.use('/api/providers', authenticateToken, providerRoutes);
+
+// Vision-bridge config + Pi vision-model catalog (protected).
+// The Pi vision-model catalog port is injected into the vision-bridge module,
+// and the vision-bridge launch-policy resolver is injected back into the
+// Pi-owned launch-policy port, so neither module imports the other.
+const piVisionModelCatalog = createPiVisionModelCatalogProvider(probePiVisionModelsRaw);
+const visionBridge = createVisionBridgeModule({ modelCatalog: piVisionModelCatalog });
+configureVisionBridgeLaunchPolicy(visionBridge.resolveLaunchPolicy);
+app.use('/api/vision-bridge', authenticateToken, visionBridge.router);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);

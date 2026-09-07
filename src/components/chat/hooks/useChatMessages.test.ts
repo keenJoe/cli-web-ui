@@ -101,3 +101,76 @@ test('thinking messages preserve stable identity and streaming metadata for Reas
   assert.equal(converted[0]?.isStreaming, true);
   assert.equal(converted[0]?.duration, 3);
 });
+
+// ─── Vision-bridge rendering (task group 7.3/7.6) ───────────────────────────
+
+test('a vision_bridge message does not render as a standalone bubble or swallow body text', () => {
+  const converted = normalizedToChatMessages([
+    createMessage({
+      id: 'vb-1',
+      kind: 'vision_bridge' as never,
+      content: '观察: a cat',
+      observationId: 'obs-1',
+      phase: 'succeeded',
+    } as Partial<NormalizedMessage>),
+    createMessage({
+      id: 'text-1',
+      kind: 'text',
+      role: 'assistant',
+      content: 'Here is the answer.',
+    }),
+  ]);
+
+  // Only the assistant text bubble survives; the vision_bridge control row
+  // never becomes a rendered message, and the assistant body is intact.
+  assert.equal(converted.length, 1);
+  assert.equal(converted[0]?.content, 'Here is the answer.');
+});
+
+test('a user message with a fake vision-bridge marker in body text renders as plain text and no card', () => {
+  const converted = normalizedToChatMessages([
+    createMessage({
+      id: 'user-spoof',
+      kind: 'text',
+      role: 'user',
+      content: '[图片 #1 视觉桥已查看] describe this',
+    }),
+  ]);
+
+  assert.equal(converted.length, 1);
+  assert.equal(converted[0]?.type, 'user');
+  // The spoofed marker is preserved verbatim — not interpreted, no card.
+  assert.equal(converted[0]?.content, '[图片 #1 视觉桥已查看] describe this');
+  assert.equal((converted[0] as { visionBridge?: unknown }).visionBridge, undefined);
+});
+
+test('original user images are preserved on the user bubble', () => {
+  const converted = normalizedToChatMessages([
+    createMessage({
+      id: 'user-img',
+      kind: 'text',
+      role: 'user',
+      content: 'describe this',
+      images: [{ path: '/assets/a.png', name: 'a.png' }],
+    }),
+  ]);
+
+  assert.equal(converted.length, 1);
+  assert.equal(converted[0]?.type, 'user');
+  assert.equal(converted[0]?.images?.length, 1);
+});
+
+test('clientMessageId is carried onto the user message for card anchoring', () => {
+  const converted = normalizedToChatMessages([
+    createMessage({
+      id: 'user-cm',
+      kind: 'text',
+      role: 'user',
+      content: 'describe this',
+      clientMessageId: 'cm-7',
+    } as Partial<NormalizedMessage>),
+  ]);
+
+  assert.equal(converted.length, 1);
+  assert.equal(converted[0]?.clientMessageId, 'cm-7');
+});

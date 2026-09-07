@@ -255,5 +255,18 @@
   },
   "tasks": {
     "nextTaskPrompt": "開始下一個任務"
+  },
+  "visionBridge": {
+    "title": "視覺橋",
+    "unboundSource": "未綁定來源",
+    "cached": "已複用",
+    "image": "圖片 #{{index}}",
+    "status": {
+      "processing": "處理中",
+      "succeeded": "已描述",
+      "failed": "失敗",
+      "skipped": "已跳過",
+      "cancelled": "已取消"
+    }
   }
 }

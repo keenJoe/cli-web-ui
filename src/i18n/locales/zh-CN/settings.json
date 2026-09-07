@@ -112,7 +112,8 @@
     "browser": "浏览器",
     "notifications": "通知",
     "plugins": "插件",
-    "about": "关于"
+    "about": "关于",
+    "visionBridge": "视觉桥"
   },
   "notifications": {
     "title": "通知",
@@ -568,5 +569,110 @@
     "installAriaLabel": "插件 git 仓库 URL",
     "tab": "标签",
     "runningStatus": "运行中"
+  },
+  "visionBridge": {
+    "title": "视觉桥",
+    "description": "为不支持图片输入的模型将图片转为文字描述。你的图片会发送到所选的视觉模型供应商。",
+    "loading": "正在加载视觉桥设置…",
+    "noApiKeyNote": "视觉凭据通过你的 Pi 供应商配置解析，此处不保存 API key 或 base URL。",
+    "enable": {
+      "label": "启用视觉桥",
+      "description": "启用后，消息中的图片会在交给当前模型前先由视觉模型描述。"
+    },
+    "confirm": {
+      "title": "启用视觉桥",
+      "body": "启用视觉桥会把消息中的图片发送到所选视觉模型供应商。请先确认外发策略。",
+      "provider": "供应商",
+      "model": "模型",
+      "toolImagesOff": "不会发送工具图片",
+      "toolImagesOn": "将会发送工具图片",
+      "continue": "启用",
+      "cancel": "取消"
+    },
+    "model": {
+      "label": "视觉模型",
+      "noneAvailable": "暂无支持图片输入的模型，请先在 Pi 中配置视觉供应商。",
+      "select": "选择视觉模型",
+      "description": "仅列出支持图片输入的模型。选择「自定义模型」可填写任意供应商/模型，并指向你自己的网关。",
+      "customOption": "自定义模型…",
+      "notImage": "该模型不支持图片输入，视觉桥转换会失败——请换一个支持图片的模型（如 glm-4v-flash / qwen-vl-plus）",
+      "supportsImage": "支持图片输入",
+      "noImageInput": "不支持图片输入",
+      "context": "上下文 ",
+      "maxOutput": "单次输出上限 ",
+      "reasoningOn": "支持思考（reasoning）",
+      "reasoningOff": "不支持思考"
+    },
+    "parameters": {
+      "title": "运行参数",
+      "maxImagesPerRun": {
+        "label": "单次最大图片数",
+        "description": "每次 provider run 最多描述的图片数（1–8）。"
+      },
+      "timeoutMs": {
+        "label": "批次超时（毫秒）",
+        "description": "整批转换的截止时间，单位毫秒（1000–25000）。"
+      },
+      "concurrency": {
+        "label": "并发数",
+        "description": "同一批次中的并发视觉调用数（1–4）。"
+      },
+      "maxTokens": {
+        "label": "输出上限 tokens",
+        "description": "单张图片视觉输出的 token 上限（128–4096）。"
+      }
+    },
+    "sources": {
+      "title": "图片来源",
+      "userImages": {
+        "label": "用户图片",
+        "description": "允许转换你附加到消息中的图片。"
+      },
+      "toolImages": {
+        "label": "工具图片",
+        "description": "允许转换工具结果产生的图片。默认关闭，以保护可能敏感的项目数据。"
+      }
+    },
+    "promptTemplate": {
+      "label": "提示词模板",
+      "help": "首尾空白会被裁剪，长度 1–4000 字符。"
+    },
+    "errors": {
+      "loadFailed": "加载视觉桥配置失败。",
+      "modelsUnavailable": "视觉模型目录暂时不可用，请稍后重试。"
+    },
+    "save": {
+      "label": "保存配置",
+      "saving": "保存中…",
+      "success": "已保存",
+      "failed": "保存失败",
+      "retry": "重试",
+      "blockedNoModel": "启用前请选择视觉模型。",
+      "blockedModelMissing": "所选模型已不可用，请选择其他模型。",
+      "blockedCredential": "所选模型没有可用凭据，请先在 Pi 中配置该供应商。"
+    },
+    "apiFormat": {
+      "label": "API 格式",
+      "description": "一般按供应商自动推断；自定义网关时才需要手动指定",
+      "options": {
+        "auto": "自动（按供应商推断）",
+        "openai": "OpenAI 兼容",
+        "anthropic": "Anthropic",
+        "google": "Google Gemini",
+        "mistral": "Mistral",
+        "bedrock": "AWS Bedrock",
+        "azure-openai": "Azure OpenAI",
+        "vertex": "Google Vertex"
+      }
+    },
+    "baseUrl": {
+      "label": "接口地址（可选）",
+      "description": "留空时使用供应商默认端点；国内供应商（GLM/Qwen 等）需要填如 https://open.bigmodel.cn/api/paas/v4"
+    },
+    "apiKey": {
+      "label": "API Key（可选）",
+      "placeholder": "填写自定义 API Key",
+      "description": "留空复用 pi 已配置的供应商 key；仅在需要单独凭据时填写"
+    }
   }
 }

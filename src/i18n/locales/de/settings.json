@@ -93,7 +93,8 @@
     "tasks": "Aufgaben",
     "notifications": "Benachrichtigungen",
     "plugins": "Plugins",
-    "about": "Info"
+    "about": "Info",
+    "visionBridge": "Visions-Brücke"
   },
   "notifications": {
     "title": "Benachrichtigungen",
@@ -480,5 +481,79 @@
     "installAriaLabel": "Git-Repository-URL des Plugins",
     "tab": "Tab",
     "runningStatus": "läuft"
+  },
+  "visionBridge": {
+    "title": "Visions-Brücke",
+    "description": "Wandelt Bilder für Modelle ohne Bildunterstützung in Textbeschreibungen um. Bilder werden an den gewählten Visionsmodell-Anbieter gesendet.",
+    "loading": "Visions-Brücke-Einstellungen werden geladen…",
+    "noApiKeyNote": "Visions-Anmeldedaten werden über Ihre Pi-Anbieterkonfiguration aufgelöst. Hier werden kein API-Schlüssel und keine Basis-URL gespeichert.",
+    "enable": {
+      "label": "Visions-Brücke aktivieren",
+      "description": "Wenn aktiviert, werden Bilder in Ihren Nachrichten vom Visionsmodell beschrieben, bevor sie das aktuelle Modell erreichen."
+    },
+    "confirm": {
+      "title": "Visions-Brücke aktivieren",
+      "body": "Das Aktivieren der Visions-Brücke sendet Bilder aus Ihren Nachrichten an den gewählten Visionsmodell-Anbieter. Prüfen Sie die Ausgeh-Richtlinie, bevor Sie fortfahren.",
+      "provider": "Anbieter",
+      "model": "Modell",
+      "toolImagesOff": "Werkzeugbilder werden nicht gesendet",
+      "toolImagesOn": "Werkzeugbilder werden gesendet",
+      "continue": "Aktivieren",
+      "cancel": "Abbrechen"
+    },
+    "model": {
+      "label": "Visionsmodell",
+      "noneAvailable": "Keine Modelle mit Bildeingabe verfügbar. Konfigurieren Sie zuerst einen Visions-Anbieter in Pi.",
+      "select": "Visionsmodell wählen",
+      "description": "Es werden nur Modelle mit Bildeingabe-Unterstützung aufgelistet. Konfigurieren Sie Anbieter-Anmeldedaten zuerst in Pi."
+    },
+    "parameters": {
+      "title": "Ausführungsparameter",
+      "maxImagesPerRun": {
+        "label": "Max. Bilder pro Lauf",
+        "description": "Maximale Anzahl beschriebener Bilder pro Anbieter-Lauf (1–8)."
+      },
+      "timeoutMs": {
+        "label": "Batch-Zeitlimit (ms)",
+        "description": "Gesamt-Deadline des Batches in Millisekunden (1000–25000)."
+      },
+      "concurrency": {
+        "label": "Nebenläufigkeit",
+        "description": "Gleichzeitige Visions-Aufrufe pro Batch (1–4)."
+      },
+      "maxTokens": {
+        "label": "Max. Ausgabe-Token",
+        "description": "Token-Obergrenze für die Bildausgabe (128–4096)."
+      }
+    },
+    "sources": {
+      "title": "Bildquellen",
+      "userImages": {
+        "label": "Benutzerbilder",
+        "description": "Erlaubt die Umwandlung von Bildern, die Sie Ihren Nachrichten anhängen."
+      },
+      "toolImages": {
+        "label": "Werkzeugbilder",
+        "description": "Erlaubt die Umwandlung von Bildern aus Werkzeugergebnissen. Standardmäßig aus, um mögliche sensible Projektdaten zu schützen."
+      }
+    },
+    "promptTemplate": {
+      "label": "Prompt-Vorlage",
+      "help": "Auf 1–4000 Zeichen gekürzt."
+    },
+    "errors": {
+      "loadFailed": "Laden der Visions-Brücke-Konfiguration fehlgeschlagen.",
+      "modelsUnavailable": "Visionsmodell-Katalog ist vorübergehend nicht verfügbar. Später erneut versuchen."
+    },
+    "save": {
+      "label": "Konfiguration speichern",
+      "saving": "Speichern…",
+      "success": "Gespeichert",
+      "failed": "Speichern fehlgeschlagen",
+      "retry": "Erneut versuchen",
+      "blockedNoModel": "Wählen Sie vor dem Aktivieren ein Visionsmodell.",
+      "blockedModelMissing": "Das gewählte Modell ist nicht mehr verfügbar. Wählen Sie ein anderes Modell.",
+      "blockedCredential": "Das gewählte Modell hat keine verfügbaren Anmeldedaten. Konfigurieren Sie den Anbieter zuerst in Pi."
+    }
   }
 }

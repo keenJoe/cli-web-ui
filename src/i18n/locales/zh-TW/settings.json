@@ -94,7 +94,8 @@
     "computer": "電腦使用",
     "notifications": "通知",
     "plugins": "外掛",
-    "about": "關於"
+    "about": "關於",
+    "visionBridge": "視覺橋"
   },
   "notifications": {
     "title": "通知",
@@ -481,5 +482,79 @@
     "installAriaLabel": "外掛 git 儲存庫 URL",
     "tab": "分頁",
     "runningStatus": "執行中"
+  },
+  "visionBridge": {
+    "title": "視覺橋",
+    "description": "為不支援圖片輸入的模型將圖片轉為文字描述。你的圖片會傳送至所選的視覺模型供應商。",
+    "loading": "正在載入視覺橋設定…",
+    "noApiKeyNote": "視覺憑證透過你的 Pi 供應商設定解析，此處不儲存 API key 或 base URL。",
+    "enable": {
+      "label": "啟用視覺橋",
+      "description": "啟用後，訊息中的圖片會在交給目前模型前先由視覺模型描述。"
+    },
+    "confirm": {
+      "title": "啟用視覺橋",
+      "body": "啟用視覺橋會把訊息中的圖片傳送至所選視覺模型供應商。請先確認外發策略。",
+      "provider": "供應商",
+      "model": "模型",
+      "toolImagesOff": "不會傳送工具圖片",
+      "toolImagesOn": "將會傳送工具圖片",
+      "continue": "啟用",
+      "cancel": "取消"
+    },
+    "model": {
+      "label": "視覺模型",
+      "noneAvailable": "暫無支援圖片輸入的模型，請先在 Pi 中設定視覺供應商。",
+      "select": "選擇視覺模型",
+      "description": "僅列出支援圖片輸入的模型。請先在 Pi 中設定供應商憑證。"
+    },
+    "parameters": {
+      "title": "執行參數",
+      "maxImagesPerRun": {
+        "label": "單次最大圖片數",
+        "description": "每次 provider run 最多描述的圖片數（1–8）。"
+      },
+      "timeoutMs": {
+        "label": "批次逾時（毫秒）",
+        "description": "整批轉換的截止時間，單位毫秒（1000–25000）。"
+      },
+      "concurrency": {
+        "label": "並行數",
+        "description": "同一批次中的並行視覺呼叫數（1–4）。"
+      },
+      "maxTokens": {
+        "label": "輸出上限 tokens",
+        "description": "單張圖片視覺輸出的 token 上限（128–4096）。"
+      }
+    },
+    "sources": {
+      "title": "圖片來源",
+      "userImages": {
+        "label": "使用者圖片",
+        "description": "允許轉換你附加到訊息中的圖片。"
+      },
+      "toolImages": {
+        "label": "工具圖片",
+        "description": "允許轉換工具結果產生的圖片。預設關閉，以保護可能敏感的專案資料。"
+      }
+    },
+    "promptTemplate": {
+      "label": "提示詞範本",
+      "help": "前後空白會被裁剪，長度 1–4000 字元。"
+    },
+    "errors": {
+      "loadFailed": "載入視覺橋設定失敗。",
+      "modelsUnavailable": "視覺模型目錄暫時不可用，請稍後重試。"
+    },
+    "save": {
+      "label": "儲存設定",
+      "saving": "儲存中…",
+      "success": "已儲存",
+      "failed": "儲存失敗",
+      "retry": "重試",
+      "blockedNoModel": "啟用前請選擇視覺模型。",
+      "blockedModelMissing": "所選模型已不可用，請選擇其他模型。",
+      "blockedCredential": "所選模型沒有可用憑證，請先在 Pi 中設定該供應商。"
+    }
   }
 }

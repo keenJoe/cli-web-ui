@@ -112,7 +112,8 @@
     "browser": "Navegador",
     "notifications": "Notificaciones",
     "plugins": "Plugins",
-    "about": "Acerca de"
+    "about": "Acerca de",
+    "visionBridge": "Puente de visión"
   },
   "notifications": {
     "title": "Notificaciones",
@@ -574,5 +575,79 @@
     "installAriaLabel": "URL del repositorio git del plugin",
     "tab": "pestaña",
     "runningStatus": "en ejecución"
+  },
+  "visionBridge": {
+    "title": "Puente de visión",
+    "description": "Convierte imágenes en descripciones de texto para modelos que no pueden ver imágenes. Tus imágenes se envían al proveedor del modelo de visión seleccionado.",
+    "loading": "Cargando ajustes del puente de visión…",
+    "noApiKeyNote": "Las credenciales de visión se resuelven mediante tu configuración de proveedor de Pi. Aquí no se guarda ninguna clave de API ni URL base.",
+    "enable": {
+      "label": "Activar puente de visión",
+      "description": "Si se activa, las imágenes de tus mensajes son descritas por un modelo de visión antes de llegar al modelo actual."
+    },
+    "confirm": {
+      "title": "Activar puente de visión",
+      "body": "Activar el puente de visión envía las imágenes de tus mensajes al proveedor del modelo de visión seleccionado. Revisa la política de salida antes de continuar.",
+      "provider": "Proveedor",
+      "model": "Modelo",
+      "toolImagesOff": "No se enviarán imágenes de herramientas",
+      "toolImagesOn": "Se enviarán imágenes de herramientas",
+      "continue": "Activar",
+      "cancel": "Cancelar"
+    },
+    "model": {
+      "label": "Modelo de visión",
+      "noneAvailable": "No hay modelos con soporte de entrada de imágenes. Configura primero un proveedor de visión en Pi.",
+      "select": "Selecciona un modelo de visión",
+      "description": "Solo se listan modelos con soporte de entrada de imágenes. Configura primero las credenciales del proveedor en Pi."
+    },
+    "parameters": {
+      "title": "Parámetros de ejecución",
+      "maxImagesPerRun": {
+        "label": "Máx. de imágenes por ejecución",
+        "description": "Número máximo de imágenes descritas por ejecución de proveedor (1–8)."
+      },
+      "timeoutMs": {
+        "label": "Tiempo de espera del lote (ms)",
+        "description": "Plazo total del lote en milisegundos (1000–25000)."
+      },
+      "concurrency": {
+        "label": "Concurrencia",
+        "description": "Llamadas de visión simultáneas por lote (1–4)."
+      },
+      "maxTokens": {
+        "label": "Máx. tokens de salida",
+        "description": "Límite de tokens de salida por imagen (128–4096)."
+      }
+    },
+    "sources": {
+      "title": "Orígenes de imágenes",
+      "userImages": {
+        "label": "Imágenes de usuario",
+        "description": "Permite convertir las imágenes que adjuntas a tus mensajes."
+      },
+      "toolImages": {
+        "label": "Imágenes de herramientas",
+        "description": "Permite convertir las imágenes producidas por resultados de herramientas. Desactivado por defecto para proteger datos del proyecto potencialmente sensibles."
+      }
+    },
+    "promptTemplate": {
+      "label": "Plantilla de prompt",
+      "help": "Se recorta a 1–4000 caracteres."
+    },
+    "errors": {
+      "loadFailed": "Error al cargar la configuración del puente de visión.",
+      "modelsUnavailable": "El catálogo de modelos de visión no está disponible temporalmente. Reintenta más tarde."
+    },
+    "save": {
+      "label": "Guardar configuración",
+      "saving": "Guardando…",
+      "success": "Guardado",
+      "failed": "Error al guardar",
+      "retry": "Reintentar",
+      "blockedNoModel": "Selecciona un modelo de visión antes de activar.",
+      "blockedModelMissing": "El modelo seleccionado ya no está disponible. Elige otro modelo.",
+      "blockedCredential": "El modelo seleccionado no tiene credenciales disponibles. Configura primero el proveedor en Pi."
+    }
   }
 }

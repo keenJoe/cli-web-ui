@@ -40,6 +40,12 @@ export interface SubagentChildTool {
 
 export interface ChatMessage {
   id?: string;
+  /**
+   * Stable optimistic-message identity shared with the server run request. The
+   * vision-bridge card renderer anchors structured observation cards to the
+   * user message with the same `clientMessageId` (design.md D7).
+   */
+  clientMessageId?: string;
   type: string;
   content?: string;
   displayText?: string;

@@ -63,6 +63,14 @@ class FakeRpc implements PiRuntimeRpc {
     return this.state as never;
   }
 
+  commands: Array<{ name: string; source?: string }> = [
+    { name: 'cloudcli-vision-bridge-health-v1', source: 'extension' },
+  ];
+
+  async getCommands(): Promise<ReadonlyArray<{ name: string; source?: string }>> {
+    return this.commands;
+  }
+
   async prompt(message: string): Promise<void> {
     this.promptCalls.push(message);
   }

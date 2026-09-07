@@ -88,7 +88,7 @@ export function asyncHandler(
  * controlled error response rather than a generic 500.
  */
 export class AppError extends Error {
-  readonly code: string;
+  readonly code: string | number;
   readonly statusCode: number;
   readonly details?: unknown;
 

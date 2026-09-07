@@ -209,3 +209,137 @@ test('T21 active branch 最后 model_change 作为当前模型透传', async () 
 
   assert.deepEqual(result.currentModel, { provider: 'openai', modelId: 'gpt-x' });
 });
+
+// ---------------------------------------------------------------------------
+// 5.7 vision-bridge session projection
+// ---------------------------------------------------------------------------
+
+function userImageEntry(id: string, parentId: string | null, base64: string, mimeType = 'image/png'): string {
+  return JSON.stringify({
+    type: 'message',
+    id,
+    parentId,
+    timestamp: '2026-08-03T00:00:00.000Z',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'look at this' },
+        { type: 'image', data: base64, mimeType },
+      ],
+      timestamp: '2026-08-03T00:00:00.000Z',
+    },
+  });
+}
+
+function visionBridgeCustomEntry(
+  id: string,
+  parentId: string,
+  data: Record<string, unknown>,
+): string {
+  return JSON.stringify({
+    type: 'custom',
+    id,
+    parentId,
+    timestamp: '2026-08-03T00:00:02.000Z',
+    customType: 'cloudcli.vision-bridge.v1',
+    data,
+  });
+}
+
+test('preserves user image blocks as data URLs with mimeType and contentHash', async () => {
+  const base64 = Buffer.from('fake-image-bytes').toString('base64');
+  const { sessionId, provider } = writeSession([
+    header(),
+    userImageEntry('u1', null, base64),
+    assistantEntry('a1', 'u1'),
+  ]);
+
+  const result = await provider.fetchHistory(sessionId);
+
+  const user = result.messages.find((m) => m.role === 'user');
+  assert.ok(user, 'user message projected');
+  assert.equal(user.content, 'look at this');
+  assert.ok(Array.isArray(user.images), 'images preserved');
+  const image = user.images[0];
+  assert.equal(image.mimeType, 'image/png');
+  assert.match(image.data, /^data:image\/png;base64,/);
+  assert.ok(typeof image.contentHash === 'string' && image.contentHash.length === 64);
+});
+
+test('projects a vision-bridge custom entry into a vision_bridge message with source identity', async () => {
+  const { sessionId, provider } = writeSession([
+    header(),
+    userEntry('u1', null),
+    assistantEntry('a1', 'u1'),
+    visionBridgeCustomEntry('vb1', 'a1', {
+      schemaVersion: 1,
+      batchId: 'batch-1',
+      runId: 'run-1',
+      appSessionId: 'child-claimed-session',
+      nativeSessionId: 'native-1',
+      items: [
+        {
+          observationId: 'obs-1',
+          source: { kind: 'user', clientMessageId: 'msg-1' },
+          imageIndex: 1,
+          contentHash: 'a'.repeat(64),
+          model: { provider: 'openai', id: 'gpt-4o-mini' },
+          description: 'a screenshot',
+          cached: true,
+        },
+      ],
+    }),
+  ]);
+
+  const result = await provider.fetchHistory(sessionId);
+
+  const vb = result.messages.find((m) => m.kind === 'vision_bridge');
+  assert.ok(vb, 'vision_bridge message projected');
+  // Authoritative app identity is the fetched session, not the child claim.
+  assert.equal(vb.sessionId, sessionId);
+  assert.equal(vb.appSessionId, sessionId);
+  assert.equal(vb.observationId, 'obs-1');
+  assert.deepEqual(vb.source, { kind: 'user', clientMessageId: 'msg-1' });
+  assert.equal(vb.phase, 'succeeded');
+  assert.equal(vb.contentHash, 'a'.repeat(64));
+});
+
+test('ignores vision-bridge custom entries with unknown schemaVersion', async () => {
+  const { sessionId, provider } = writeSession([
+    header(),
+    userEntry('u1', null),
+    visionBridgeCustomEntry('vb1', 'u1', {
+      schemaVersion: 99,
+      batchId: 'batch-1',
+      runId: 'run-1',
+      items: [{ observationId: 'obs-1', phase: 'succeeded' }],
+    }),
+  ]);
+
+  const result = await provider.fetchHistory(sessionId);
+
+  assert.equal(result.messages.filter((m) => m.kind === 'vision_bridge').length, 0);
+  assert.equal(result.messages.length, 1); // only the user message remains
+});
+
+test('maps failed/skipped items to non-succeeded terminal phases', async () => {
+  const { sessionId, provider } = writeSession([
+    header(),
+    userEntry('u1', null),
+    visionBridgeCustomEntry('vb1', 'u1', {
+      schemaVersion: 1,
+      batchId: 'batch-1',
+      runId: 'run-1',
+      items: [
+        { observationId: 'obs-fail', source: { kind: 'user' }, imageIndex: 1, contentHash: 'b'.repeat(64), errorCode: 'VISION_TIMEOUT', errorMessage: '超时' },
+        { observationId: 'obs-skip', source: { kind: 'user' }, imageIndex: 2, contentHash: 'c'.repeat(64), errorCode: 'LIMIT_EXCEEDED' },
+      ],
+    }),
+  ]);
+
+  const result = await provider.fetchHistory(sessionId);
+  const vb = result.messages.filter((m) => m.kind === 'vision_bridge');
+  assert.equal(vb.length, 2);
+  assert.equal(vb.find((m) => m.observationId === 'obs-fail')?.phase, 'failed');
+  assert.equal(vb.find((m) => m.observationId === 'obs-skip')?.phase, 'skipped');
+});

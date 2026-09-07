@@ -125,6 +125,7 @@ function ChatInterface({
     scrollToBottom,
     scrollToBottomAndReset,
     handleScroll,
+    visionBridgeCards,
   } = useChatSessionState({
     selectedProject,
     selectedSession,
@@ -374,6 +375,7 @@ function ChatInterface({
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}
+          visionBridgeCards={visionBridgeCards}
         />
 
         <div className="relative flex-shrink-0">

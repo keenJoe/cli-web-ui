@@ -2500,3 +2500,76 @@ test('bounds claimed server message ids for a large persisted transcript', () =>
   assert.equal(reconciliationState.claimedServerMessageIds.size, 0);
   assert.equal(reconciliationState.consumedServerMessageIdByRealtimeMessageId.size, 0);
 });
+
+// ─── Vision-bridge message consistency (task group 7.5) ─────────────────────
+
+test('transfers clientMessageId from an optimistic user echo onto its matched persisted user message', () => {
+  const local = createUserMessage('local_vb', '2026-09-04T00:00:00.000Z', {
+    content: 'describe this',
+    images: [{ path: 'C:/Users/test/.cloudcli/assets/upload.png', name: 'image.png' }],
+    clientMessageId: 'cm-1',
+  });
+  const persisted = createUserMessage('pi_vb', '2026-09-04T00:00:01.000Z', {
+    content: 'describe this',
+    images: [{ data: 'data:image/png;base64,AAAA' }],
+    // The persisted Pi user message does not carry clientMessageId itself.
+  });
+
+  const merged = mergeSessionMessages([persisted], [local]);
+
+  // Exactly one user bubble remains.
+  const userMessages = merged.filter((m) => m.kind === 'text' && m.role === 'user');
+  assert.equal(userMessages.length, 1);
+  // The optimistic identity is transferred so the vision-bridge card stays
+  // anchored to the surviving persisted bubble (design.md D7).
+  assert.equal(userMessages[0]?.id, 'pi_vb');
+  assert.equal(userMessages[0]?.clientMessageId, 'cm-1');
+});
+
+test('prefers a clientMessageId match over fingerprint when the server echoes it', () => {
+  const local = createUserMessage('local_vb2', '2026-09-04T00:00:00.000Z', {
+    content: 'describe this',
+    images: [{ path: 'C:/Users/test/.cloudcli/assets/upload.png' }],
+    clientMessageId: 'cm-2',
+  });
+  // Persisted message echoes the same clientMessageId but with slightly
+  // different normalized text (whitespace) — fingerprint would NOT match.
+  const persisted = createUserMessage('pi_vb2', '2026-09-04T00:00:01.000Z', {
+    content: 'describe   this',
+    images: [{ data: 'data:image/png;base64,AAAA' }],
+    clientMessageId: 'cm-2',
+  });
+
+  const merged = mergeSessionMessages([persisted], [local]);
+  const userMessages = merged.filter((m) => m.kind === 'text' && m.role === 'user');
+  assert.equal(userMessages.length, 1);
+  assert.equal(userMessages[0]?.id, 'pi_vb2');
+  assert.equal(userMessages[0]?.clientMessageId, 'cm-2');
+});
+
+test('a vision_bridge custom entry projected into history does not create a second user bubble', () => {
+  const local = createUserMessage('local_vb3', '2026-09-04T00:00:00.000Z', {
+    content: 'describe this',
+    images: [{ path: 'C:/Users/test/.cloudcli/assets/upload.png' }],
+    clientMessageId: 'cm-3',
+  });
+  // The persisted transcript now also contains a vision_bridge control row
+  // (projected from a custom entry). It must not surface as a user message.
+  const persistedUser = createUserMessage('pi_vb3', '2026-09-04T00:00:01.000Z', {
+    content: 'describe this',
+    images: [{ data: 'data:image/png;base64,AAAA' }],
+  });
+  const persistedVisionBridge: NormalizedMessage = {
+    id: 'entry-1:obs-1',
+    sessionId: 'session-1',
+    timestamp: '2026-09-04T00:00:02.000Z',
+    provider: 'pi',
+    kind: 'vision_bridge',
+    observationId: 'obs-1',
+    phase: 'succeeded',
+  } as NormalizedMessage;
+
+  const merged = mergeSessionMessages([persistedUser, persistedVisionBridge], [local]);
+  const userMessages = merged.filter((m) => m.kind === 'text' && m.role === 'user');
+  assert.equal(userMessages.length, 1);
+});

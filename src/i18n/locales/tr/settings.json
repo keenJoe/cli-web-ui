@@ -94,7 +94,8 @@
     "computer": "Bilgisayar Kullanımı",
     "notifications": "Bildirimler",
     "plugins": "Eklentiler",
-    "about": "Hakkında"
+    "about": "Hakkında",
+    "visionBridge": "Görüntü köprüsü"
   },
   "notifications": {
     "title": "Bildirimler",
@@ -487,5 +488,79 @@
     "installAriaLabel": "Eklenti git deposu URL'si",
     "tab": "sekme",
     "runningStatus": "çalışıyor"
+  },
+  "visionBridge": {
+    "title": "Görüntü köprüsü",
+    "description": "Görüntüleri göremeyen modeller için görselleri metin açıklamalarına dönüştürür. Görselleriniz seçilen görüntü modeli sağlayıcısına gönderilir.",
+    "loading": "Görüntü köprüsü ayarları yükleniyor…",
+    "noApiKeyNote": "Görüntü kimlik bilgileri Pi sağlayıcı yapılandırmanız üzerinden çözülür. Burada API anahtarı veya base URL saklanmaz.",
+    "enable": {
+      "label": "Görüntü köprüsünü etkinleştir",
+      "description": "Etkinleştirildiğinde, iletilerinizdeki görseller mevcut modele ulaşmadan önce bir görüntü modeli tarafından açıklanır."
+    },
+    "confirm": {
+      "title": "Görüntü köprüsünü etkinleştir",
+      "body": "Görüntü köprüsünü etkinleştirmek, iletilerinizdeki görselleri seçilen görüntü modeli sağlayıcısına gönderir. Devam etmeden önce dışa gönderim ilkesini inceleyin.",
+      "provider": "Sağlayıcı",
+      "model": "Model",
+      "toolImagesOff": "Araç görselleri gönderilmeyecek",
+      "toolImagesOn": "Araç görselleri gönderilecek",
+      "continue": "Etkinleştir",
+      "cancel": "İptal"
+    },
+    "model": {
+      "label": "Görüntü modeli",
+      "noneAvailable": "Görüntü girişi destekli model yok. Önce Pi içinde bir görüntü sağlayıcısı yapılandırın.",
+      "select": "Bir görüntü modeli seçin",
+      "description": "Yalnızca görüntü girişi destekleyen modeller listelenir. Önce Pi içinde sağlayıcı kimlik bilgilerini yapılandırın."
+    },
+    "parameters": {
+      "title": "Yürütme parametreleri",
+      "maxImagesPerRun": {
+        "label": "Çalıştırma başına maks. görsel",
+        "description": "Sağlayıcı çalıştırması başına açıklanan maksimum görsel sayısı (1–8)."
+      },
+      "timeoutMs": {
+        "label": "Toplu işlem zaman aşımı (ms)",
+        "description": "Milisaniye cinsinden toplu işlem son tarihi (1000–25000)."
+      },
+      "concurrency": {
+        "label": "Eşzamanlılık",
+        "description": "Toplu işlem başına eşzamanlı görüntü çağrısı sayısı (1–4)."
+      },
+      "maxTokens": {
+        "label": "Maks. çıktı tokeni",
+        "description": "Görsel başına görüntü çıktısı token üst sınırı (128–4096)."
+      }
+    },
+    "sources": {
+      "title": "Görsel kaynakları",
+      "userImages": {
+        "label": "Kullanıcı görselleri",
+        "description": "İletilerinize eklediğiniz görsellerin dönüştürülmesine izin verir."
+      },
+      "toolImages": {
+        "label": "Araç görselleri",
+        "description": "Araç sonuçları tarafından üretilen görsellerin dönüştürülmesine izin verir. Olası hassas proje verilerini korumak için varsayılan olarak kapalıdır."
+      }
+    },
+    "promptTemplate": {
+      "label": "Prompt şablonu",
+      "help": "1–4000 karaktere kırpılır."
+    },
+    "errors": {
+      "loadFailed": "Görüntü köprüsü yapılandırması yüklenemedi.",
+      "modelsUnavailable": "Görüntü modeli kataloğu geçici olarak kullanılamıyor. Daha sonra tekrar deneyin."
+    },
+    "save": {
+      "label": "Yapılandırmayı kaydet",
+      "saving": "Kaydediliyor…",
+      "success": "Kaydedildi",
+      "failed": "Kaydetme başarısız",
+      "retry": "Tekrar dene",
+      "blockedNoModel": "Etkinleştirmeden önce bir görüntü modeli seçin.",
+      "blockedModelMissing": "Seçilen model artık kullanılamıyor. Başka bir model seçin.",
+      "blockedCredential": "Seçilen modelin kullanılabilir kimlik bilgisi yok. Önce Pi içinde sağlayıcıyı yapılandırın."
+    }
   }
 }

@@ -1,4 +1,5 @@
 import fsSync, { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import mime from 'mime-types';
@@ -25,6 +26,8 @@ type StoredImageAsset = {
   path: string;
   size: number;
   mimeType: string;
+  /** Raw-byte SHA-256 (64 lowercase hex); absent when the file cannot be read. */
+  contentHash?: string;
 };
 
 // Shape of one multer-stored file; kept local because only this module reads it.
@@ -50,11 +53,48 @@ export async function ensureImageAssetsDir(): Promise<string> {
 }
 
 /**
+ * Computes the raw-byte SHA-256 (64 lowercase hex) of a stored file, or
+ * `undefined` when the file is missing/unreadable so old or partially-written
+ * uploads stay backward compatible.
+ */
+function computeRawBytesSha256(filePath: string): string | undefined {
+  // ponytail: synchronous read is bounded by multer's 5 MiB x 5 image limit;
+  // switch to async hashing only if the upload path grows beyond that ceiling.
+  try {
+    return createHash('sha256').update(fsSync.readFileSync(filePath)).digest('hex');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Maps multer-stored upload files to the attachment records returned to the
  * chat composer. The absolute path is what providers receive and what session
- * history carries back to the UI.
+ * history carries back to the UI. Each record includes a raw-byte `contentHash`
+ * so the Pi adapter can verify content identity without re-reading bytes.
  */
 export function buildStoredImageRecords(files: UploadedImageFile[]): StoredImageAsset[] {
+  const assetsDir = getGlobalImageAssetsDir();
+  return files.map((file) => {
+    const filePath = path.join(assetsDir, file.filename);
+    const contentHash = computeRawBytesSha256(filePath);
+    return {
+      name: file.originalname,
+      path: toPosixPath(filePath),
+      size: file.size,
+      mimeType: file.mimetype,
+      ...(contentHash ? { contentHash } : {}),
+    };
+  });
+}
+
+/**
+ * Maps multer-stored files to provider-neutral attachment records for the
+ * assets route. The shared storage format intentionally matches image records
+ * so one uploaded file can move through queueing and provider dispatch. These
+ * are non-image files, so no raw-byte `contentHash` is computed.
+ */
+export function buildStoredAttachmentRecords(files: UploadedAttachmentFile[]): StoredImageAsset[] {
   const assetsDir = getGlobalImageAssetsDir();
   return files.map((file) => ({
     name: file.originalname,
@@ -62,15 +102,6 @@ export function buildStoredImageRecords(files: UploadedImageFile[]): StoredImage
     size: file.size,
     mimeType: file.mimetype,
   }));
-}
-
-/**
- * Maps multer-stored files to provider-neutral attachment records for the
- * assets route. The shared storage format intentionally matches image records
- * so one uploaded file can move through queueing and provider dispatch.
- */
-export function buildStoredAttachmentRecords(files: UploadedAttachmentFile[]): StoredImageAsset[] {
-  return buildStoredImageRecords(files);
 }
 
 /**

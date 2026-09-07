@@ -240,5 +240,18 @@
   },
   "tasks": {
     "nextTaskPrompt": "开始下一个任务"
+  },
+  "visionBridge": {
+    "title": "视觉桥",
+    "unboundSource": "未绑定来源",
+    "cached": "已复用",
+    "image": "图片 #{{index}}",
+    "status": {
+      "processing": "处理中",
+      "succeeded": "已描述",
+      "failed": "失败",
+      "skipped": "已跳过",
+      "cancelled": "已取消"
+    }
   }
 }

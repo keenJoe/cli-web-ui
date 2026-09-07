@@ -21,6 +21,21 @@ import {
   upsertRealtimeMessages,
   type SessionMessageReconciliationState,
 } from './sessionMessageReconciliation';
+import type {
+  VisionBridgeCard,
+  VisionBridgeSessionState,
+} from './visionBridgeState';
+import type {
+  VisionBridgeRunEventV1,
+  VisionBridgeRunPhase,
+  VisionBridgeRunSource,
+} from '../../shared/vision-bridge';
+import {
+  applyVisionBridgeEvent,
+  createVisionBridgeSessionState,
+  projectVisionBridgeCards,
+  synthesizeCancelledOnAbort,
+} from './visionBridgeState';
 
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
@@ -38,7 +53,8 @@ export type MessageKind =
   | 'permission_cancelled'
   | 'session_created'
   | 'interactive_prompt'
-  | 'task_notification';
+  | 'task_notification'
+  | 'vision_bridge';
 
 export interface NormalizedMessage {
   id: string;
@@ -100,6 +116,26 @@ export interface NormalizedMessage {
   // Cursor-specific ordering
   sequence?: number;
   rowid?: number;
+
+  // ─── Vision-bridge structured observation fields (kind === 'vision_bridge') ──
+  /** Server-validated structured event payload (design.md D4/D7). */
+  event?: VisionBridgeRunEventV1;
+  /** CloudCLI run id; authoritative, server-overwrites child claims. */
+  runId?: string;
+  /** App-facing session id; authoritative. */
+  appSessionId?: string;
+  /** Logical identity of one image position across all phases. */
+  observationId?: string;
+  /** Current phase of this observation. */
+  phase?: VisionBridgeRunPhase;
+  /** Mutually exclusive image-source union. */
+  source?: VisionBridgeRunSource;
+  /** 1-based image index within the original message. */
+  imageIndex?: number;
+  /** Raw-byte SHA-256; cache/verification only, never message identity. */
+  contentHash?: string;
+  /** Flattened clientMessageId when source.kind === 'user' (rendering anchor). */
+  clientMessageId?: string;
 }
 
 // ─── Per-session slot ────────────────────────────────────────────────────────
@@ -125,6 +161,12 @@ export interface SessionSlot {
    */
   _fetchSeq: number;
   _appliedFetchSeq: number;
+  /**
+   * Structured vision-bridge observation state for this session. Realtime
+   * `vision_bridge` events and history batch items reduce into it; it is the
+   * single source of truth for vision-bridge cards (design.md D4/D11).
+   */
+  visionBridge: VisionBridgeSessionState;
   status: SessionStatus;
   fetchedAt: number;
   total: number;
@@ -153,6 +195,7 @@ function createEmptySlot(): SessionSlot {
     tokenUsage: null,
     _fetchSeq: 0,
     _appliedFetchSeq: 0,
+    visionBridge: createVisionBridgeSessionState(),
   };
 }
 
@@ -183,8 +226,36 @@ function recomputeMergedIfNeeded(slot: SessionSlot): boolean {
 }
 
 // ─── Stale threshold ─────────────────────────────────────────────────────────
-
 const STALE_THRESHOLD_MS = 30_000;
+
+/**
+ * Extracts vision-bridge messages from a fetched history page, seeds the
+ * session's structured observation state (idempotently), and returns the
+ * non-vision-bridge messages. Vision-bridge rows are control rows: they
+ * reduce into the VB state and never render as standalone messages
+ * (design.md D4/D7). contentHash is cache/verification only.
+ */
+function seedAndStripVisionBridgeMessages(
+  slot: SessionSlot,
+  sessionId: string,
+  messages: NormalizedMessage[],
+): NormalizedMessage[] {
+  const kept: NormalizedMessage[] = [];
+  for (const msg of messages) {
+    if (msg.kind === 'vision_bridge') {
+      const event = msg.event;
+      if (event) {
+        const result = applyVisionBridgeEvent(slot.visionBridge, sessionId, event);
+        slot.visionBridge = result.state;
+      }
+      continue;
+    }
+    kept.push(msg);
+  }
+  return kept;
+}
+
+// ─── Realtime bounds ─────────────────────────────────────────────────────────
 
 const MAX_REALTIME_MESSAGES = 500;
 
@@ -263,7 +334,7 @@ export function useSessionStore() {
       }
       slot._appliedFetchSeq = fetchTicket;
 
-      slot.serverMessages = messages;
+      slot.serverMessages = seedAndStripVisionBridgeMessages(slot, sessionId, messages);
       const reconciliation = reconcileSessionMessages(
         slot.serverMessages,
         slot.realtimeMessages,
@@ -329,8 +400,11 @@ export function useSessionStore() {
       }
       slot._appliedFetchSeq = fetchTicket;
 
-      // Prepend older messages (they're earlier in the conversation)
-      slot.serverMessages = [...olderMessages, ...slot.serverMessages];
+      // Prepend older messages (they're earlier in the conversation). Older
+      // pages may contain vision-bridge history rows; seed and strip them so
+      // the structured card state stays the single source of truth.
+      const strippedOlder = seedAndStripVisionBridgeMessages(slot, sessionId, olderMessages);
+      slot.serverMessages = [...strippedOlder, ...slot.serverMessages];
       slot.hasMore = Boolean(data.hasMore);
       slot.offset = slot.offset + olderMessages.length;
       recomputeMergedIfNeeded(slot);
@@ -345,6 +419,10 @@ export function useSessionStore() {
   /**
    * Append a realtime (WebSocket) message to the correct session slot.
    * This works regardless of which session is actively viewed.
+   *
+   * `vision_bridge` events are control rows: they reduce into the session's
+   * structured observation state (first-terminal-wins, cross-session guarded)
+   * and never enter the rendered message list (design.md D4/D7/D11).
    */
   const appendRealtime = useCallback((sessionId: string, msg: NormalizedMessage) => {
     const slot = getSlot(sessionId);
@@ -352,6 +430,16 @@ export function useSessionStore() {
       msg.sessionId === sessionId
         ? msg
         : { ...msg, sessionId };
+
+    if (normalizedMessage.kind === 'vision_bridge' && normalizedMessage.event) {
+      const result = applyVisionBridgeEvent(slot.visionBridge, sessionId, normalizedMessage.event);
+      if (result.accepted) {
+        slot.visionBridge = result.state;
+        notify(sessionId);
+      }
+      return;
+    }
+
     let updated = upsertRealtimeMessages(
       slot.realtimeMessages,
       [normalizedMessage],
@@ -377,9 +465,27 @@ export function useSessionStore() {
         ? msg
         : { ...msg, sessionId },
     );
+
+    // Route vision-bridge control rows into the structured state machine.
+    const nonVisionBridge: NormalizedMessage[] = [];
+    for (const msg of normalizedMessages) {
+      if (msg.kind === 'vision_bridge' && msg.event) {
+        const result = applyVisionBridgeEvent(slot.visionBridge, sessionId, msg.event);
+        if (result.accepted) {
+          slot.visionBridge = result.state;
+        }
+        continue;
+      }
+      nonVisionBridge.push(msg);
+    }
+    if (nonVisionBridge.length === 0) {
+      notify(sessionId);
+      return;
+    }
+
     let updated = upsertRealtimeMessages(
       slot.realtimeMessages,
-      normalizedMessages,
+      nonVisionBridge,
       slot.reconciliationState,
     );
     if (updated.length > MAX_REALTIME_MESSAGES) {
@@ -415,7 +521,11 @@ export function useSessionStore() {
       }
       slot._appliedFetchSeq = fetchTicket;
 
-      slot.serverMessages = data.messages || [];
+      slot.serverMessages = seedAndStripVisionBridgeMessages(
+        slot,
+        sessionId,
+        (data.messages || []) as NormalizedMessage[],
+      );
       slot.total = data.total ?? slot.serverMessages.length;
       slot.hasMore = Boolean(data.hasMore);
       slot.fetchedAt = Date.now();
@@ -534,6 +644,36 @@ export function useSessionStore() {
     return storeRef.current.get(sessionId);
   }, []);
 
+  /**
+   * Synthesizes one idempotent `cancelled` terminal for every vision-bridge
+   * observation in this session that is still started-but-not-terminal.
+   *
+   * Called by the realtime handler when the authoritative
+   * `complete(aborted:true)` run terminal arrives (design.md D11). The
+   * extension's own `cancelled` status is only best-effort and may not arrive
+   * after an abort; this guarantees the UI always sees a terminal card.
+   */
+  const synthesizeVisionBridgeCancellation = useCallback((sessionId: string) => {
+    const slot = storeRef.current.get(sessionId);
+    if (!slot) return;
+    const result = synthesizeCancelledOnAbort(slot.visionBridge, sessionId);
+    if (result.events.length > 0) {
+      slot.visionBridge = result.state;
+      notify(sessionId);
+    }
+  }, [notify]);
+
+  /**
+   * Projects the session's structured vision-bridge observations into render
+   * cards grouped by anchor (clientMessageId / toolCallId / sourceEntryId /
+   * unbound). The UI attaches cards to the matching user message or tool
+   * result, and renders unbound cards once at the session level.
+   */
+  const getVisionBridgeCards = useCallback((sessionId: string): VisionBridgeCard[] => {
+    const slot = storeRef.current.get(sessionId);
+    return slot ? projectVisionBridgeCards(slot.visionBridge) : [];
+  }, []);
+
   return useMemo(() => ({
     getSlot,
     has,
@@ -550,11 +690,14 @@ export function useSessionStore() {
     clearRealtime,
     getMessages,
     getSessionSlot,
+    synthesizeVisionBridgeCancellation,
+    getVisionBridgeCards,
   }), [
     getSlot, has, fetchFromServer, fetchMore,
     appendRealtime, appendRealtimeBatch, refreshFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
     clearRealtime, getMessages, getSessionSlot,
+    synthesizeVisionBridgeCancellation, getVisionBridgeCards,
   ]);
 }
 
